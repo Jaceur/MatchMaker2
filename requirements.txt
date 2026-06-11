@@ -1,0 +1,7 @@
+streamlit
+google-cloud-sql-connector
+pg8000
+sqlalchemy
+requests
+duckduckgo-search
+beautifulsoup4
