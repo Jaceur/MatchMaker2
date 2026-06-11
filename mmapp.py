@@ -1,11 +1,18 @@
 import streamlit as st
+from google.oauth2 import service_account
 from google.cloud.sql.connector import Connector, IPTypes
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, select, update
 import matchmaker2
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Matchmaker 2.0 | Lead Triage", layout="centered")
-connector = Connector()
+# 1. Read the passport from Streamlit Secrets
+creds = service_account.Credentials.from_service_account_info(
+    st.secrets["gcp_service_account"]
+)
+
+# 2. Hand the passport to the Connector
+connector = Connector(credentials=creds)
 
 # --- OPTIMIZATION 1: SECURE CONNECTION & CACHE ---
 @st.cache_resource
