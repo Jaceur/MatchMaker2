@@ -57,8 +57,13 @@ sales_leads = Table(
     Column('website_accurate', Boolean, default=None),
     Column('linkedin_accurate', Boolean, default=None),
     Column('contact_accurate', Boolean, default=None),
+    Column('rejection_reason', String(255)),
+    Column('is_nabd', Boolean, default=False),
+    Column('active_directors', String(255)),
     Column('status', String(50), default='sourced'),
     Column('assigned_ae_username', String(100)),
+    Column('assigned_date', DateTime),
+    Column('confidence_score', Integer, default=0),
     Column('created_at', DateTime, default=datetime.utcnow),
     Column('updated_at', DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 )
@@ -157,6 +162,37 @@ def score_website_match(url, company_name_clean):
         
     return min(score, 100)
 
+def score_linkedin_match(url, title, snippet, company_name_clean):
+    score = 0
+    clean_name_lower = company_name_clean.lower()
+    clean_name_no_spaces = clean_name_lower.replace(" ", "")
+    first_word = clean_name_lower.split()[0] if clean_name_lower else ""
+
+    # Extract the company slug from the URL (e.g., /company/revolut -> revolut)
+    url_parts = url.rstrip('/').split('/')
+    slug = url_parts[-1].lower() if 'company' in url_parts else ""
+    slug_no_hyphens = slug.replace("-", "")
+
+    # SIGNAL 1: URL Slug Match (Max 50 points)
+    if clean_name_no_spaces == slug_no_hyphens:
+        score += 50  # Exact match
+    elif clean_name_no_spaces in slug_no_hyphens or (slug_no_hyphens and slug_no_hyphens in clean_name_no_spaces):
+        score += 25  # Partial match
+    elif first_word and first_word in slug_no_hyphens:
+        score += 10  # First word only
+
+    # SIGNAL 2: Search Engine Snippet Corroboration (Max 50 points)
+    if title and clean_name_lower in title.lower():
+        score += 30
+    if snippet and clean_name_lower in snippet.lower():
+        score += 20
+
+    # PENALTIES (Kill bad directory links)
+    if "directory" in url.lower() or "showcase" in url.lower():
+        score -= 50
+
+    return min(score, 100)
+
 def enrich_sourced_leads(limit=None):
     print("Starting enrichment phase...")
     with engine.begin() as connection:
@@ -204,20 +240,71 @@ def enrich_sourced_leads(limit=None):
             # LinkedIn Lookup
             found_linkedin = None
             try:
+                strict_query = f'{company_name_strict} UK site:linkedin.com/company/'
+                
                 with DDGS() as ddgs:
-                    results = list(ddgs.text(f'{company_name_strict} UK site:linkedin.com/company/', max_results=1))
-                    if results:
-                        raw_link = results[0].get('href', '')
+                    # Pull the top 3 results to compare them
+                    results = list(ddgs.text(strict_query, max_results=3))
+                    
+                    best_li_score = 0
+                    best_li_url = None
+                    
+                    for result in results:
+                        raw_link = result.get('href', '')
+                        title = result.get('title', '')
+                        snippet = result.get('body', '')
+                        
                         if "/company/" in raw_link and "/jobs/" not in raw_link:
-                            found_linkedin = raw_link.split('?')[0]
+                            # Pass the URL, title, and snippet to our new scoring model
+                            confidence = score_linkedin_match(raw_link, title, snippet, company_name_clean)
+                            print(f"   [LinkedIn Scanner] {raw_link} -> Confidence: {confidence}/100")
+                            
+                            if confidence > best_li_score:
+                                best_li_score = confidence
+                                # Clean off any ugly tracking tags (e.g., ?trk=public_profile)
+                                best_li_url = raw_link.split('?')[0] 
+                                
+                    # Threshold: We only accept the link if the score is 40 or higher
+                    if best_li_score >= 40:
+                        found_linkedin = best_li_url
+                    else:
+                        print("   [LinkedIn Scanner] No results passed the confidence threshold.")
             except Exception as e:
                 print(f"DDG Search failed: {e}")
+                
+            web_status = "high" if best_score >= 70 else "low" if best_score >= 40 else "none"
+            li_status = "high" if best_li_score >= 70 else "low" if best_li_score >= 40 else "none"
+            
+            statuses = [web_status, li_status]
+            
+            if statuses.count("high") == 2:
+                combined_score = 90
+            elif statuses.count("high") == 1 and statuses.count("low") == 1:
+                combined_score = 85
+            elif statuses.count("high") == 1 and statuses.count("none") == 1:
+                combined_score = 80
+            elif statuses.count("low") == 2:
+                combined_score = 70
+            elif statuses.count("low") == 1 and statuses.count("none") == 1:
+                combined_score = 60
+            else:
+                combined_score = 0
 
-            # Database Update
-            print(f" -> Website: {found_domain}\n -> LinkedIn: {found_linkedin}")
+            # ---------------------------------------------------------
+            # DATABASE UPDATE
+            # ---------------------------------------------------------
+            print(f" -> Website: {found_domain} ({web_status})")
+            print(f" -> LinkedIn: {found_linkedin} ({li_status})")
+            print(f" -> OVERALL SCORE: {combined_score}")
+            
             connection.execute(
                 update(sales_leads).where(sales_leads.c.id == record.id)
-                .values(website_url=found_domain, linkedin_url=found_linkedin, status='ready_for_swipe')
+                .values(
+                    website_url=found_domain, 
+                    linkedin_url=found_linkedin, 
+                    confidence_score=combined_score, # Push the score to the DB!
+                    status='ready_for_swipe'
+                )
             )
             
         print("\nEnrichment batch complete!")

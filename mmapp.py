@@ -1,8 +1,10 @@
 import streamlit as st
+import pandas as pd
 from google.oauth2 import service_account
 from google.cloud.sql.connector import Connector, IPTypes
-from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, select, update
+from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, Boolean, DateTime, select, update, text
 import matchmaker2
+import admin_panel
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Matchmaker 2.0 | Lead Triage", layout="centered")
@@ -43,8 +45,15 @@ sales_leads = Table(
     Column('incorporation_date', String),
     Column('website_url', String),
     Column('linkedin_url', String),
+    Column('website_accurate', Boolean),
+    Column('linkedin_accurate', Boolean),
+    Column('rejection_reason', String),
+    Column('is_nabd', Boolean),
+    Column('active_directors', String),
     Column('status', String),
-    Column('assigned_ae', String)
+    Column('assigned_ae', String),
+    Column('confidence_score', Integer),
+    Column('assigned_date', DateTime),
 )
 
 users_table = Table(
@@ -127,6 +136,9 @@ def main_app():
         with st.container(border=True):
             st.subheader(f"🏢 {current_lead['company_name']}")
             st.caption(f"Status: Active | Incorporated: {current_lead['incorporation_date']}")
+
+            score = current_lead.get('confidence_score', 0)
+            st.progress(score / 100, text=f"Data Confidence Score: {score}%")
             
             st.markdown("### Quick Links")
             col1, col2 = st.columns(2)
@@ -158,40 +170,6 @@ def main_app():
         st.caption(f"Lead {st.session_state.current_lead_index + 1} of {len(leads)}")
 
 # ==========================================
-# PAGE 3: THE ADMIN DASHBOARD
-# ==========================================
-def admin_dashboard():
-    st.title("⚙️ Admin Control Center")
-    st.write("Manage the Matchmaker 2.0 pipeline engine.")
-    st.divider()
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.markdown("### 📡 Source")
-        st.caption("Pull fresh LTDs from Companies House.")
-        if st.button("Run Sourcing API", use_container_width=True):
-            with st.spinner("Querying Companies House..."):
-                matchmaker2.run_sourcing_pipeline() 
-            st.success("New leads added to database!")
-
-    with col2:
-        st.markdown("### 🧠 Enrich")
-        st.caption("Run DDG scoring and LinkedIn matching.")
-        if st.button("Run Enrichment", use_container_width=True):
-            with st.spinner("Scraping and scoring the web... This may take a few minutes."):
-                matchmaker2.run_enrichment_pipeline()
-            st.success("Leads are ready for swipe!")
-
-    with col3:
-        st.markdown("### 🛑 Danger Zone")
-        st.caption("Wipe the database completely clean.")
-        if st.button("Clear Database", type="primary", use_container_width=True):
-            with st.spinner("Deleting records..."):
-                matchmaker2.clear_all_data()
-            st.warning("Database cleared.")
-
-# ==========================================
 # ROUTING LOGIC (DRY Principle Applied)
 # ==========================================
 if not st.session_state.logged_in:
@@ -214,8 +192,9 @@ else:
             st.session_state.clear() # Instantly deletes all session variables safely
             st.rerun()
 
-    # 2. Render the selected page
+# 2. Render the selected page
     if page_selection == "Swipe Leads":
         main_app()
     elif page_selection == "Admin Dashboard":
-        admin_dashboard()
+        # Call the new file and hand it the database engine!
+        admin_panel.render_dashboard(engine)
