@@ -8,7 +8,7 @@ from ddgs import DDGS
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from google.cloud.sql.connector import Connector, IPTypes
-from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, Date, Boolean, DateTime, select, update, delete
+from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, Date, Boolean, DateTime, select, update, delete, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -60,6 +60,8 @@ sales_leads = Table(
     Column('rejection_reason', String(255)),
     Column('is_nabd', Boolean, default=False),
     Column('active_directors', String(255)),
+    Column('linkedin_raw_title', String),
+    Column('linkedin_raw_snippet', String),
     Column('status', String(50), default='sourced'),
     Column('assigned_ae_username', String(100)),
     Column('assigned_date', DateTime),
@@ -168,30 +170,38 @@ def score_linkedin_match(url, title, snippet, company_name_clean):
     clean_name_no_spaces = clean_name_lower.replace(" ", "")
     first_word = clean_name_lower.split()[0] if clean_name_lower else ""
 
-    # Extract the company slug from the URL (e.g., /company/revolut -> revolut)
     url_parts = url.rstrip('/').split('/')
     slug = url_parts[-1].lower() if 'company' in url_parts else ""
     slug_no_hyphens = slug.replace("-", "")
 
-    # SIGNAL 1: URL Slug Match (Max 50 points)
+    # SIGNAL 1: URL Slug Match (Stricter)
     if clean_name_no_spaces == slug_no_hyphens:
-        score += 50  # Exact match
-    elif clean_name_no_spaces in slug_no_hyphens or (slug_no_hyphens and slug_no_hyphens in clean_name_no_spaces):
-        score += 25  # Partial match
-    elif first_word and first_word in slug_no_hyphens:
-        score += 10  # First word only
+        score += 40  # Exact match
+    elif slug_no_hyphens.startswith(clean_name_no_spaces):
+        score += 20  # Starts with (e.g., revolut-ltd)
+    elif first_word and slug_no_hyphens.startswith(first_word):
+        score += 5   # First word only (Severely nerfed)
 
-    # SIGNAL 2: Search Engine Snippet Corroboration (Max 50 points)
+    # SIGNAL 2: Search Engine Corroboration
     if title and clean_name_lower in title.lower():
         score += 30
     if snippet and clean_name_lower in snippet.lower():
         score += 20
+        
+    # SIGNAL 3: Geographic Context (The Companies House Advantage)
+    if snippet and any(uk_term in snippet.lower() for uk_term in [' uk ', 'united kingdom', 'london', 'england']):
+        score += 10
 
-    # PENALTIES (Kill bad directory links)
-    if "directory" in url.lower() or "showcase" in url.lower():
+    # PENALTIES (Aggressive filtering)
+    url_lower = url.lower()
+    if any(bad in url_lower for bad in ['/showcase/', '/school/', '/pulse/', '/directory/']):
         score -= 50
+        
+    # Penalize if the snippet clearly indicates a foreign branch
+    if snippet and any(foreign in snippet.lower() for foreign in [' usa ', ' ny ', 'california', 'australia', 'canada']):
+         score -= 20
 
-    return min(score, 100)
+    return min(max(score, 0), 100) # Ensure it stays between 0 and 100
 
 def enrich_sourced_leads(limit=None):
     print("Starting enrichment phase...")
@@ -239,14 +249,13 @@ def enrich_sourced_leads(limit=None):
 
             # LinkedIn Lookup
             found_linkedin = None
+            best_li_score = 0
+            best_li_title = None
+            best_li_snippet = None
             try:
                 strict_query = f'{company_name_strict} UK site:linkedin.com/company/'
-                
                 with DDGS() as ddgs:
-                    # Pull the top 3 results to compare them
                     results = list(ddgs.text(strict_query, max_results=3))
-                    
-                    best_li_score = 0
                     best_li_url = None
                     
                     for result in results:
@@ -255,23 +264,18 @@ def enrich_sourced_leads(limit=None):
                         snippet = result.get('body', '')
                         
                         if "/company/" in raw_link and "/jobs/" not in raw_link:
-                            # Pass the URL, title, and snippet to our new scoring model
                             confidence = score_linkedin_match(raw_link, title, snippet, company_name_clean)
-                            print(f"   [LinkedIn Scanner] {raw_link} -> Confidence: {confidence}/100")
-                            
                             if confidence > best_li_score:
                                 best_li_score = confidence
-                                # Clean off any ugly tracking tags (e.g., ?trk=public_profile)
                                 best_li_url = raw_link.split('?')[0] 
+                                best_li_title = title
+                                best_li_snippet = snippet
                                 
-                    # Threshold: We only accept the link if the score is 40 or higher
-                    if best_li_score >= 40:
+                    if best_li_score >= 40: 
                         found_linkedin = best_li_url
-                    else:
-                        print("   [LinkedIn Scanner] No results passed the confidence threshold.")
             except Exception as e:
                 print(f"DDG Search failed: {e}")
-                
+
             web_status = "high" if best_score >= 70 else "low" if best_score >= 40 else "none"
             li_status = "high" if best_li_score >= 70 else "low" if best_li_score >= 40 else "none"
             
@@ -301,8 +305,10 @@ def enrich_sourced_leads(limit=None):
                 update(sales_leads).where(sales_leads.c.id == record.id)
                 .values(
                     website_url=found_domain, 
-                    linkedin_url=found_linkedin, 
-                    confidence_score=combined_score, # Push the score to the DB!
+                    linkedin_url=found_linkedin,
+                    linkedin_raw_title=best_li_title,      # <-- PUSH TO DB
+                    linkedin_raw_snippet=best_li_snippet,  # <-- PUSH TO DB
+                    confidence_score=combined_score, 
                     status='ready_for_swipe'
                 )
             )
@@ -314,6 +320,30 @@ def clear_database():
     with engine.begin() as connection:
         result = connection.execute(delete(sales_leads))
         print(f"SUCCESS: Wiped {result.rowcount} records from the sales_leads table.")
+
+def assign_leads_to_ae(username, num_leads):
+    print(f"Assigning {num_leads} leads to {username}...")
+    with engine.begin() as connection:
+        # We use a subquery to grab the best unassigned leads
+        assign_query = text("""
+            UPDATE sales_leads
+            SET assigned_ae_username = :username,
+                assigned_date = :now
+            WHERE id IN (
+                SELECT id FROM sales_leads 
+                WHERE status = 'ready_for_swipe' AND assigned_ae_username IS NULL
+                ORDER BY confidence_score DESC
+                LIMIT :limit
+            )
+        """)
+        
+        result = connection.execute(assign_query, {
+            "username": username, 
+            "now": datetime.utcnow(), 
+            "limit": num_leads
+        })
+        
+        return result.rowcount
 
 # ==========================================
 # 4. PIPELINE MANAGERS

@@ -32,6 +32,36 @@ def render_dashboard(engine):
 
     st.divider()
 
+    # --- SECTION 1.5: MANUAL LEAD ALLOCATION ---
+    st.markdown("### 🎯 Manual Lead Allocation")
+    
+    with engine.connect() as conn:
+        # Fetch a list of all non-admin users to populate the dropdown
+        users_df = pd.read_sql("SELECT username FROM users WHERE role != 'admin'", conn)
+        user_list = users_df['username'].tolist() if not users_df.empty else ["No AEs found"]
+        
+        # Count how many leads are waiting in the pool
+        unassigned_count = conn.execute(text("SELECT COUNT(*) FROM sales_leads WHERE status = 'ready_for_swipe' AND assigned_ae_username IS NULL")).scalar()
+
+    st.caption(f"Unassigned leads ready for distribution: **{unassigned_count}**")
+
+    col_a, col_b, col_c = st.columns([2, 2, 1])
+    with col_a:
+        selected_ae = st.selectbox("Select Account Executive", user_list)
+    with col_b:
+        num_leads = st.number_input("Number of Leads", min_value=1, max_value=500, value=10)
+    with col_c:
+        st.markdown("<br>", unsafe_allow_html=True) # Aligns the button with the inputs
+        if st.button("Assign Leads", type="primary", use_container_width=True):
+            if unassigned_count == 0:
+                st.error("No unassigned leads available in the pool!")
+            else:
+                assigned = matchmaker2.assign_leads_to_ae(selected_ae, num_leads)
+                st.success(f"Successfully assigned {assigned} leads to {selected_ae}!")
+                st.rerun() # Refreshes the page to update the metrics
+
+    st.divider()
+
     # --- SECTION 2: LIVE METRICS ---
     st.markdown("### 📊 Pipeline Health")
     

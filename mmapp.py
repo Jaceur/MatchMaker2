@@ -5,6 +5,7 @@ from google.cloud.sql.connector import Connector, IPTypes
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, Boolean, DateTime, select, update, text
 import matchmaker2
 import admin_panel
+import ae_dashboard
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Matchmaker 2.0 | Lead Triage", layout="centered")
@@ -198,3 +199,6 @@ else:
     elif page_selection == "Admin Dashboard":
         # Call the new file and hand it the database engine!
         admin_panel.render_dashboard(engine)
+    elif page_selection == "My Pipeline":
+        # Pass the engine AND the logged-in user's name
+        ae_dashboard.render_ae_pipeline(engine, st.session_state["username"])
