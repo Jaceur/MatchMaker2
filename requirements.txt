@@ -7,3 +7,4 @@ ddgs
 beautifulsoup4
 google-auth
 pandas
+bcrypt

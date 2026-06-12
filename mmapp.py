@@ -1,91 +1,88 @@
+import bcrypt  # pip install bcrypt — add to requirements.txt
+import hmac
+
 import streamlit as st
-import pandas as pd
-from google.oauth2 import service_account
-from google.cloud.sql.connector import Connector, IPTypes
-from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, Boolean, DateTime, select, update, text
+from sqlalchemy import Table, Column, Integer, String, select, update
+
+# Single source of truth: matchmaker2 owns the engine, the connector,
+# and the sales_leads schema. app.py no longer duplicates any of it.
 import matchmaker2
+from matchmaker2 import sales_leads
 import admin_panel
 import ae_dashboard
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Matchmaker 2.0 | Lead Triage", layout="centered")
-# 1. Read the passport from Streamlit Secrets
-creds = service_account.Credentials.from_service_account_info(
-    st.secrets["gcp_service_account"]
-)
 
-# 2. Hand the passport to the Connector
-connector = Connector(credentials=creds)
+engine = matchmaker2.get_backend_engine()
 
-# --- OPTIMIZATION 1: SECURE CONNECTION & CACHE ---
-@st.cache_resource
-def init_db_connection():
-
-    def getconn():
-        # Pulling the password securely from Streamlit Secrets
-        conn = connector.connect(
-            "enrichmentno:europe-west2:matchmaker-2",
-            "pg8000",
-            user="postgres",
-            password=st.secrets["DB_PASSWORD"], 
-            db="sales-pipeline",
-            ip_type=IPTypes.PUBLIC
-        )
-        return conn
-
-    return create_engine("postgresql+pg8000://", creator=getconn, pool_pre_ping=True)
-
-engine = init_db_connection()
-metadata = MetaData()
-
-# --- OPTIMIZATION 2: EXPLICIT SCHEMA ---
-sales_leads = Table(
-    'sales_leads', metadata,
-    Column('id', Integer, primary_key=True),
-    Column('company_name', String),
-    Column('incorporation_date', String),
-    Column('website_url', String),
-    Column('linkedin_url', String),
-    Column('website_accurate', Boolean),
-    Column('linkedin_accurate', Boolean),
-    Column('rejection_reason', String),
-    Column('is_nabd', Boolean),
-    Column('active_directors', String),
-    Column('status', String),
-    Column('assigned_ae', String),
-    Column('confidence_score', Integer),
-    Column('assigned_date', DateTime),
-)
-
+# users isn't defined in matchmaker2, so it lives here — attached to the
+# shared metadata so there's still only one MetaData object in play.
 users_table = Table(
-    'users', metadata,
+    'users', matchmaker2.metadata,
     Column('id', Integer, primary_key=True),
     Column('username', String),
     Column('password', String),
-    Column('role', String)
+    Column('role', String),
+    extend_existing=True,
 )
+# matchmaker2 ran create_all before this table was defined, so run it
+# again here. It's safe: it only creates tables that don't exist yet.
+matchmaker2.metadata.create_all(engine)
 
 # --- SESSION STATE INITIALIZATION ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
-# --- DATA LOADING FUNCTION ---
+# --- AUTH ---
+def verify_password(stored: str, supplied: str) -> bool:
+    """Checks a password. Understands both scrambled (bcrypt) passwords
+    and old plain-text ones, so nobody is locked out during the changeover."""
+    if not stored:
+        return False
+    if stored.startswith("$2"):  # bcrypt hashes always start with this
+        return bcrypt.checkpw(supplied.encode(), stored.encode())
+    return hmac.compare_digest(stored, supplied)  # legacy plain text
+
+def upgrade_password_to_hash(user_id: int, plain_password: str):
+    """Quietly converts an old plain-text password to a scrambled one
+    the first time that user logs in successfully. This means the whole
+    team migrates to secure passwords automatically — no script needed."""
+    hashed = bcrypt.hashpw(plain_password.encode(), bcrypt.gensalt()).decode()
+    with engine.begin() as conn:
+        conn.execute(
+            update(users_table)
+            .where(users_table.c.id == user_id)
+            .values(password=hashed)
+        )
+
+# --- DATA LOADING ---
 @st.cache_data(ttl=600)
 def get_pending_leads(ae_username):
+    """Fetches this AE's unprocessed leads, best score first.
+    Cached so the database isn't queried on every single click."""
     with engine.connect() as conn:
-        query = select(sales_leads).where(
-            (sales_leads.c.status == 'ready_for_swipe') & 
-            (sales_leads.c.assigned_ae == ae_username)
+        query = (
+            select(sales_leads)
+            .where(
+                (sales_leads.c.status == 'ready_for_swipe')
+                & (sales_leads.c.assigned_ae_username == ae_username)
+            )
+            .order_by(sales_leads.c.confidence_score.desc())
         )
-        results = conn.execute(query).mappings().fetchall()
-        return [dict(row) for row in results]
+        return [dict(row) for row in conn.execute(query).mappings().fetchall()]
 
 # --- SWIPE ACTIONS ---
 def update_lead_status(lead_id, new_status):
+    """Saves the decision, then clears the cached lead list so the
+    next screen draw fetches a fresh, accurate list from the database."""
     with engine.begin() as conn:
-        stmt = update(sales_leads).where(sales_leads.c.id == lead_id).values(status=new_status)
-        conn.execute(stmt)
-    st.session_state.current_lead_index += 1
+        conn.execute(
+            update(sales_leads)
+            .where(sales_leads.c.id == lead_id)
+            .values(status=new_status)
+        )
+    get_pending_leads.clear()
 
 # ==========================================
 # PAGE 1: THE LOGIN PORTAL
@@ -94,23 +91,25 @@ def login_page():
     st.title("🔒 Matchmaker Login")
     with st.form("login_form"):
         input_username = st.text_input("Username").strip().lower()
-        input_password = st.text_input("Password", type="password").strip()
+        input_password = st.text_input("Password", type="password")
         submit = st.form_submit_button("Log In")
-        
+
         if submit:
             with engine.connect() as conn:
                 query = select(users_table).where(
-                    (users_table.c.username == input_username) & 
-                    (users_table.c.password == input_password)
+                    users_table.c.username == input_username
                 )
                 user_record = conn.execute(query).fetchone()
-                
-            if user_record:
-                # Store all user info in memory ONCE to save DB queries
+
+            if user_record and verify_password(user_record.password, input_password):
+                # If they logged in with an old plain-text password,
+                # upgrade it to a secure scrambled one right now.
+                if not user_record.password.startswith("$2"):
+                    upgrade_password_to_hash(user_record.id, input_password)
+
                 st.session_state.logged_in = True
                 st.session_state.username = user_record.username
                 st.session_state.role = user_record.role
-                st.session_state.current_lead_index = 0
                 st.rerun()
             else:
                 st.error("Invalid username or password. Please try again.")
@@ -125,80 +124,82 @@ def main_app():
 
     leads = get_pending_leads(st.session_state.username)
 
-    if st.session_state.current_lead_index >= len(leads):
+    if not leads:
         st.success("🎉 Inbox Zero! You've triaged all your assigned leads.")
-        if st.button("Refresh My Leads"):
-            st.cache_data.clear()
-            st.session_state.current_lead_index = 0
+        if st.button("Check for New Leads"):
+            get_pending_leads.clear()
             st.rerun()
-    else:
-        current_lead = leads[st.session_state.current_lead_index]
-        
-        with st.container(border=True):
-            st.subheader(f"🏢 {current_lead['company_name']}")
-            st.caption(f"Status: Active | Incorporated: {current_lead['incorporation_date']}")
+        return
 
-            score = current_lead.get('confidence_score', 0)
-            st.progress(score / 100, text=f"Data Confidence Score: {score}%")
-            
-            st.markdown("### Quick Links")
-            col1, col2 = st.columns(2)
-            with col1:
-                if current_lead['website_url']:
-                    st.markdown(f"**🌐 Website:** [Visit Site]({current_lead['website_url']})")
-                else:
-                    st.markdown("**🌐 Website:** ❌ Not Found")
-                    
-            with col2:
-                if current_lead['linkedin_url']:
-                    st.markdown(f"**💼 LinkedIn:** [View Profile]({current_lead['linkedin_url']})")
-                else:
-                    st.markdown("**💼 LinkedIn:** ❌ Not Found")
-                    
-            st.markdown("<br>", unsafe_allow_html=True)
+    # Always work on the top of the freshest list — no position counter
+    # to fall out of sync with the database.
+    current_lead = leads[0]
 
-            col_pass, col_approve = st.columns(2)
-            with col_pass:
-                if st.button("❌ Pass (Archive)", use_container_width=True):
-                    update_lead_status(current_lead['id'], 'archived')
-                    st.rerun()
-                    
-            with col_approve:
-                if st.button("✅ Approve (Send to CRM)", type="primary", use_container_width=True):
-                    update_lead_status(current_lead['id'], 'approved')
-                    st.rerun()
-                    
-        st.caption(f"Lead {st.session_state.current_lead_index + 1} of {len(leads)}")
+    with st.container(border=True):
+        st.subheader(f"🏢 {current_lead['company_name']}")
+        st.caption(f"Status: Active | Incorporated: {current_lead['incorporation_date']}")
+
+        score = current_lead.get('confidence_score') or 0  # treat missing score as 0
+        st.progress(score / 100, text=f"Data Confidence Score: {score}%")
+
+        st.markdown("### Quick Links")
+        col1, col2 = st.columns(2)
+        with col1:
+            if current_lead['website_url']:
+                st.markdown(f"**🌐 Website:** [Visit Site]({current_lead['website_url']})")
+            else:
+                st.markdown("**🌐 Website:** ❌ Not Found")
+
+        with col2:
+            if current_lead['linkedin_url']:
+                st.markdown(f"**💼 LinkedIn:** [View Profile]({current_lead['linkedin_url']})")
+            else:
+                st.markdown("**💼 LinkedIn:** ❌ Not Found")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_pass, col_approve = st.columns(2)
+        with col_pass:
+            if st.button("❌ Pass (Archive)", use_container_width=True):
+                update_lead_status(current_lead['id'], 'archived')
+                st.rerun()
+
+        with col_approve:
+            if st.button("✅ Approve (Send to CRM)", type="primary", use_container_width=True):
+                update_lead_status(current_lead['id'], 'approved')
+                st.rerun()
+
+    st.caption(f"{len(leads)} lead{'s' if len(leads) != 1 else ''} left to review")
 
 # ==========================================
-# ROUTING LOGIC (DRY Principle Applied)
+# ROUTING LOGIC
 # ==========================================
 if not st.session_state.logged_in:
     login_page()
 else:
-    # 1. Unified Sidebar Setup
     with st.sidebar:
-        st.write(f"Logged in as: **{st.session_state.username.title()}** ({st.session_state.role.title()})")
-        
-        # Only admins get the navigation radio buttons
+        st.write(
+            f"Logged in as: **{st.session_state.username.title()}** "
+            f"({st.session_state.role.title()})"
+        )
+
+        nav_options = ["Swipe Leads", "My Pipeline"]
         if st.session_state.role == 'admin':
-            page_selection = st.radio("Navigation", ["Swipe Leads", "Admin Dashboard"])
-        else:
-            page_selection = "Swipe Leads" # Forced route for AEs
-            
+            nav_options.append("Admin Dashboard")
+        page_selection = st.radio("Navigation", nav_options)
+
         st.divider()
-        
-        # Unified Logout Button
+
         if st.button("Log Out"):
-            st.session_state.clear() # Instantly deletes all session variables safely
+            st.session_state.clear()
             st.rerun()
 
-# 2. Render the selected page
     if page_selection == "Swipe Leads":
         main_app()
-    elif page_selection == "Admin Dashboard":
-        # Call the new file and hand it the database engine!
-        admin_panel.render_dashboard(engine)
     elif page_selection == "My Pipeline":
-        # Pass the engine AND the logged-in user's name
-        ae_dashboard.render_ae_pipeline(engine, st.session_state["username"])
+        ae_dashboard.render_ae_pipeline(engine, st.session_state.username)
+    elif page_selection == "Admin Dashboard":
+        if st.session_state.role == 'admin':  # check at the door, not just hide the button
+            admin_panel.render_dashboard(engine)
+        else:
+            st.error("You don't have permission to view this page.")
