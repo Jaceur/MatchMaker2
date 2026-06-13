@@ -2,6 +2,7 @@ import random
 import re
 import time
 
+import pandas as pd
 import requests
 import streamlit as st
 from google.oauth2 import service_account
@@ -115,7 +116,29 @@ ml_pipeline_analytics = Table(
 metadata.create_all(engine)
 
 # ==========================================
-# 3. WORKER FUNCTIONS
+# 3. FEATURE ENGINEERING
+# ==========================================
+def engineer_ml_features(current_lead):
+    """Converts raw database strings into numerical features for Machine Learning.
+    Shared by the swipe page (Pass) and My Pipeline (Approve), so it lives here
+    on the owner module to avoid a circular import between them."""
+    try:
+        incorp_date = pd.to_datetime(current_lead['incorporation_date'])
+        age_in_days = (pd.Timestamp.now() - incorp_date).days
+        company_age_months = max(0, age_in_days // 30)
+    except Exception:
+        company_age_months = 0
+
+    directors = current_lead.get('active_directors', '')
+    if not directors or pd.isna(directors):
+        director_count = 0
+    else:
+        director_count = len(str(directors).split(','))
+
+    return company_age_months, director_count
+
+# ==========================================
+# 4. WORKER FUNCTIONS
 # ==========================================
 def fetch_and_store_random_batch(max_attempts=10):
     ch_url = "https://api.company-information.service.gov.uk/advanced-search/companies"

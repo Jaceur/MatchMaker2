@@ -36,7 +36,7 @@ def render_dashboard(engine):
     st.markdown("### 🎯 Manual Lead Allocation")
     
     with engine.connect() as conn:
-        # Fetch a list of all non-admin users to populate the dropdown
+        # Fetch a list of all users to populate the dropdown
         users_df = pd.read_sql("SELECT username FROM users", conn)
         user_list = users_df['username'].tolist() if not users_df.empty else ["No AEs found"]
         
@@ -94,7 +94,6 @@ def render_dashboard(engine):
                 SUM(CASE WHEN s.status = 'ready_for_swipe' THEN 1 ELSE 0 END) AS "Pending"
             FROM users u
             LEFT JOIN sales_leads s ON u.username = s.assigned_ae
-            WHERE u.role != 'admin'
             GROUP BY u.username
         """)
         user_stats_df = pd.read_sql(user_stats_query, engine)

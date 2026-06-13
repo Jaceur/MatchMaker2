@@ -2,7 +2,6 @@ import bcrypt  # pip install bcrypt — add to requirements.txt
 import hmac
 import time
 
-import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, Date, Boolean, DateTime, select, update, delete, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -76,23 +75,8 @@ def get_pending_leads(ae_username):
         )
         return [dict(row) for row in conn.execute(query).mappings().fetchall()]
 
-# --- ML FEATURE ENGINEERING ---
-def engineer_ml_features(current_lead):
-    """Converts raw database strings into numerical features for Machine Learning."""
-    try:
-        incorp_date = pd.to_datetime(current_lead['incorporation_date'])
-        age_in_days = (pd.Timestamp.now() - incorp_date).days
-        company_age_months = max(0, age_in_days // 30)
-    except:
-        company_age_months = 0
-
-    directors = current_lead.get('active_directors', '')
-    if not directors or pd.isna(directors):
-        director_count = 0
-    else:
-        director_count = len(str(directors).split(','))
-
-    return company_age_months, director_count
+# Feature engineering lives in matchmaker2 (shared with My Pipeline);
+# reference it as matchmaker2.engineer_ml_features.
 
 # ==========================================
 # PAGE 1: THE LOGIN PORTAL
@@ -181,66 +165,65 @@ def main_app():
         # --- THE DECISION ENGINE ---
         st.markdown("### Pipeline Decision")
 
-        # We use columns to put the dropdown right above its respective button
         col_pass, col_approve = st.columns(2)
 
         with col_pass:
-            rejection_reason = st.selectbox(
-                "If passing, why?",
-                ["Bad Industry", "Too Small", "No Public Info", "Competitor", "Out of Business", "Other"]
-            )
+            # Two-step pass: only ask for the reason *after* the AE commits to
+            # archiving, so the reason dropdown doesn't distract during review.
+            if st.session_state.get('pending_pass') == current_lead['id']:
+                rejection_reason = st.selectbox(
+                    "Why are you passing?",
+                    ["Bad Industry", "Too Small", "No Public Info", "Competitor", "Out of Business", "Other"],
+                    key="rej_reason"
+                )
+                confirm, cancel = st.columns(2)
+                if confirm.button("Confirm Archive", type="primary", use_container_width=True):
+                    dwell_time = int(time.time() - st.session_state.start_time)
+                    age_months, dir_count = matchmaker2.engineer_ml_features(current_lead)
 
-            if st.button("❌ Pass (Archive)", use_container_width=True):
-                dwell_time = int(time.time() - st.session_state.start_time)
-                age_months, dir_count = engineer_ml_features(current_lead)
-
-                with engine.begin() as conn:
-                    # 1. Update live pipeline
-                    conn.execute(
-                        update(sales_leads).where(sales_leads.c.id == current_lead['id'])
-                        .values(status='archived', rejection_reason=rejection_reason)
-                    )
-                    # 2. Log ML Data
-                    conn.execute(
-                        pg_insert(ml_pipeline_analytics).values(
-                            lead_id=current_lead['id'], crn=current_lead['crn'],
-                            company_age_months=age_months, director_count=dir_count,
-                            website_score=score, linkedin_score=score, overall_score=score,
-                            website_valid=web_valid, linkedin_valid=li_valid,
-                            is_worth_it=False, rejection_reason=rejection_reason,
-                            dwell_time_seconds=dwell_time, swiped_by=st.session_state.username
+                    with engine.begin() as conn:
+                        # 1. Update live pipeline
+                        conn.execute(
+                            update(sales_leads).where(sales_leads.c.id == current_lead['id'])
+                            .values(status='archived', rejection_reason=rejection_reason)
                         )
-                    )
-                get_pending_leads.clear()
-                st.rerun()
+                        # 2. Log ML Data
+                        conn.execute(
+                            pg_insert(ml_pipeline_analytics).values(
+                                lead_id=current_lead['id'], crn=current_lead['crn'],
+                                company_age_months=age_months, director_count=dir_count,
+                                website_score=score, linkedin_score=score, overall_score=score,
+                                website_valid=web_valid, linkedin_valid=li_valid,
+                                is_worth_it=False, rejection_reason=rejection_reason,
+                                dwell_time_seconds=dwell_time, swiped_by=st.session_state.username
+                            )
+                        )
+                    st.session_state.pending_pass = None
+                    get_pending_leads.clear()
+                    st.rerun()
+                if cancel.button("Cancel", use_container_width=True):
+                    st.session_state.pending_pass = None
+                    st.rerun()
+            else:
+                if st.button("❌ Pass (Archive)", use_container_width=True):
+                    st.session_state.pending_pass = current_lead['id']
+                    st.rerun()
 
         with col_approve:
-            crm_status = st.selectbox(
-                "If approving, CRM status:",
-                ["Net New", "Existing Lead", "Existing Account", "NAB", "Disqualified"]
-            )
-
-            if st.button("✅ Approve (Send to CRM)", type="primary", use_container_width=True):
-                dwell_time = int(time.time() - st.session_state.start_time)
-                age_months, dir_count = engineer_ml_features(current_lead)
-
+            # Approve is a fast yes: mark it approved and stash the validation
+            # checkboxes onto the lead. CRM classification happens later in
+            # "My Pipeline", where the ML row gets written.
+            if st.button("✅ Approve", type="primary", use_container_width=True):
                 with engine.begin() as conn:
-                    # 1. Update live pipeline
                     conn.execute(
                         update(sales_leads).where(sales_leads.c.id == current_lead['id'])
-                        .values(status='approved', is_nabd=(crm_status == 'NAB'))
-                    )
-                    # 2. Log ML Data
-                    conn.execute(
-                        pg_insert(ml_pipeline_analytics).values(
-                            lead_id=current_lead['id'], crn=current_lead['crn'],
-                            company_age_months=age_months, director_count=dir_count,
-                            website_score=score, linkedin_score=score, overall_score=score,
-                            website_valid=web_valid, linkedin_valid=li_valid,
-                            is_worth_it=True, crm_status=crm_status,
-                            dwell_time_seconds=dwell_time, swiped_by=st.session_state.username
+                        .values(
+                            status='approved',
+                            website_accurate=web_valid,
+                            linkedin_accurate=li_valid,
                         )
                     )
+                st.session_state.pending_pass = None
                 get_pending_leads.clear()
                 st.rerun()
 
