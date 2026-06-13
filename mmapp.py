@@ -1,8 +1,12 @@
 import bcrypt  # pip install bcrypt — add to requirements.txt
 import hmac
+import time
+from datetime import datetime
 
+import pandas as pd
 import streamlit as st
-from sqlalchemy import Table, Column, Integer, String, select, update
+from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, Date, Boolean, DateTime, select, update, delete, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 # Single source of truth: matchmaker2 owns the engine, the connector,
 # and the sales_leads schema. app.py no longer duplicates any of it.
@@ -25,6 +29,38 @@ users_table = Table(
     Column('password', String),
     Column('role', String),
     extend_existing=True,
+)
+
+ml_pipeline_analytics = Table(
+    'ml_pipeline_analytics', matchmaker2.metadata,
+    Column('id', Integer, primary_key=True),
+    Column('lead_id', Integer),
+    Column('crn', String),
+    
+    # Firmographics
+    Column('company_age_months', Integer),
+    Column('director_count', Integer),
+    
+    # Scraper Scores
+    Column('website_score', Integer),
+    Column('linkedin_score', Integer),
+    Column('overall_score', Integer),
+    
+    # Human Validations
+    Column('website_valid', Boolean),
+    Column('linkedin_valid', Boolean),
+    
+    # The Swipe
+    Column('is_worth_it', Boolean),
+    Column('rejection_reason', String),
+    Column('dwell_time_seconds', Integer),
+    
+    # The CRM Reality
+    Column('crm_status', String),
+    
+    # Audit
+    Column('swiped_by', String),
+    Column('created_at', DateTime, default=datetime.utcnow)
 )
 # matchmaker2 ran create_all before this table was defined, so run it
 # again here. It's safe: it only creates tables that don't exist yet.
@@ -72,17 +108,23 @@ def get_pending_leads(ae_username):
         )
         return [dict(row) for row in conn.execute(query).mappings().fetchall()]
 
-# --- SWIPE ACTIONS ---
-def update_lead_status(lead_id, new_status):
-    """Saves the decision, then clears the cached lead list so the
-    next screen draw fetches a fresh, accurate list from the database."""
-    with engine.begin() as conn:
-        conn.execute(
-            update(sales_leads)
-            .where(sales_leads.c.id == lead_id)
-            .values(status=new_status)
-        )
-    get_pending_leads.clear()
+# --- ML FEATURE ENGINEERING ---
+def engineer_ml_features(current_lead):
+    """Converts raw database strings into numerical features for Machine Learning."""
+    try:
+        incorp_date = pd.to_datetime(current_lead['incorporation_date'])
+        age_in_days = (pd.Timestamp.now() - incorp_date).days
+        company_age_months = max(0, age_in_days // 30)
+    except:
+        company_age_months = 0
+
+    directors = current_lead.get('active_directors', '')
+    if not directors or pd.isna(directors):
+        director_count = 0
+    else:
+        director_count = len(str(directors).split(','))
+
+    return company_age_months, director_count
 
 # ==========================================
 # PAGE 1: THE LOGIN PORTAL
@@ -119,7 +161,7 @@ def login_page():
 # ==========================================
 def main_app():
     st.title("🔥 Matchmaker 2.0 Triage")
-    st.write("Review your assigned leads. **Approve** sends them to CRM, **Pass** archives them.")
+    st.write("Review your assigned leads. Validate the data, add context, and submit.")
     st.divider()
 
     leads = get_pending_leads(st.session_state.username)
@@ -131,42 +173,107 @@ def main_app():
             st.rerun()
         return
 
-    # Always work on the top of the freshest list — no position counter
-    # to fall out of sync with the database.
     current_lead = leads[0]
+
+    # --- THE HIDDEN DWELL TIMER ---
+    # Start the clock the moment a new lead appears on the screen
+    if 'current_lead_id' not in st.session_state or st.session_state.current_lead_id != current_lead['id']:
+        st.session_state.start_time = time.time()
+        st.session_state.current_lead_id = current_lead['id']
 
     with st.container(border=True):
         st.subheader(f"🏢 {current_lead['company_name']}")
         st.caption(f"Status: Active | Incorporated: {current_lead['incorporation_date']}")
 
-        score = current_lead.get('confidence_score') or 0  # treat missing score as 0
+        score = current_lead.get('confidence_score') or 0
         st.progress(score / 100, text=f"Data Confidence Score: {score}%")
 
-        st.markdown("### Quick Links")
+        # --- QUICK LINKS & VALIDATION ---
+        st.markdown("### Source Links & Validation")
         col1, col2 = st.columns(2)
+
         with col1:
             if current_lead['website_url']:
                 st.markdown(f"**🌐 Website:** [Visit Site]({current_lead['website_url']})")
+                web_valid = st.checkbox("Website is accurate", value=True, key="web_val")
             else:
                 st.markdown("**🌐 Website:** ❌ Not Found")
+                web_valid = False
 
         with col2:
             if current_lead['linkedin_url']:
                 st.markdown(f"**💼 LinkedIn:** [View Profile]({current_lead['linkedin_url']})")
+                li_valid = st.checkbox("LinkedIn is accurate", value=True, key="li_val")
             else:
                 st.markdown("**💼 LinkedIn:** ❌ Not Found")
+                li_valid = False
 
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.divider()
 
+        # --- THE DECISION ENGINE ---
+        st.markdown("### Pipeline Decision")
+
+        # We use columns to put the dropdown right above its respective button
         col_pass, col_approve = st.columns(2)
+
         with col_pass:
+            rejection_reason = st.selectbox(
+                "If passing, why?",
+                ["Bad Industry", "Too Small", "No Public Info", "Competitor", "Out of Business", "Other"]
+            )
+
             if st.button("❌ Pass (Archive)", use_container_width=True):
-                update_lead_status(current_lead['id'], 'archived')
+                dwell_time = int(time.time() - st.session_state.start_time)
+                age_months, dir_count = engineer_ml_features(current_lead)
+
+                with engine.begin() as conn:
+                    # 1. Update live pipeline
+                    conn.execute(
+                        update(sales_leads).where(sales_leads.c.id == current_lead['id'])
+                        .values(status='archived', rejection_reason=rejection_reason)
+                    )
+                    # 2. Log ML Data
+                    conn.execute(
+                        pg_insert(ml_pipeline_analytics).values(
+                            lead_id=current_lead['id'], crn=current_lead['crn'],
+                            company_age_months=age_months, director_count=dir_count,
+                            website_score=score, linkedin_score=score, overall_score=score,
+                            website_valid=web_valid, linkedin_valid=li_valid,
+                            is_worth_it=False, rejection_reason=rejection_reason,
+                            dwell_time_seconds=dwell_time, swiped_by=st.session_state.username
+                        )
+                    )
+                get_pending_leads.clear()
                 st.rerun()
 
         with col_approve:
+            crm_status = st.selectbox(
+                "If approving, CRM status:",
+                ["Net New", "Existing Lead", "Existing Account", "NAB", "Disqualified"]
+            )
+
             if st.button("✅ Approve (Send to CRM)", type="primary", use_container_width=True):
-                update_lead_status(current_lead['id'], 'approved')
+                dwell_time = int(time.time() - st.session_state.start_time)
+                age_months, dir_count = engineer_ml_features(current_lead)
+
+                with engine.begin() as conn:
+                    # 1. Update live pipeline
+                    conn.execute(
+                        update(sales_leads).where(sales_leads.c.id == current_lead['id'])
+                        .values(status='approved', is_nabd=(crm_status == 'NAB'))
+                    )
+                    # 2. Log ML Data
+                    conn.execute(
+                        pg_insert(ml_pipeline_analytics).values(
+                            lead_id=current_lead['id'], crn=current_lead['crn'],
+                            company_age_months=age_months, director_count=dir_count,
+                            website_score=score, linkedin_score=score, overall_score=score,
+                            website_valid=web_valid, linkedin_valid=li_valid,
+                            is_worth_it=True, crm_status=crm_status,
+                            dwell_time_seconds=dwell_time, swiped_by=st.session_state.username
+                        )
+                    )
+                get_pending_leads.clear()
                 st.rerun()
 
     st.caption(f"{len(leads)} lead{'s' if len(leads) != 1 else ''} left to review")

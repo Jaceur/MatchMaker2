@@ -80,6 +80,38 @@ sales_leads = Table(
     Column('updated_at', DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 )
 
+ml_pipeline_analytics = Table(
+    'ml_pipeline_analytics', metadata,
+    Column('id', Integer, primary_key=True),
+    Column('lead_id', Integer),
+    Column('crn', String),
+    
+    # Firmographics
+    Column('company_age_months', Integer),
+    Column('director_count', Integer),
+    
+    # Scraper Scores
+    Column('website_score', Integer),
+    Column('linkedin_score', Integer),
+    Column('overall_score', Integer),
+    
+    # Human Validations
+    Column('website_valid', Boolean),
+    Column('linkedin_valid', Boolean),
+    
+    # The Swipe
+    Column('is_worth_it', Boolean),
+    Column('rejection_reason', String),
+    Column('dwell_time_seconds', Integer),
+    
+    # The CRM Reality
+    Column('crm_status', String),
+    
+    # Audit
+    Column('swiped_by', String),
+    Column('created_at', DateTime, default=datetime.utcnow)
+)
+
 metadata.create_all(engine)
 
 # ==========================================
