@@ -1,7 +1,6 @@
 import bcrypt  # pip install bcrypt — add to requirements.txt
 import hmac
 import time
-from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -11,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 # Single source of truth: matchmaker2 owns the engine, the connector,
 # and the sales_leads schema. app.py no longer duplicates any of it.
 import matchmaker2
-from matchmaker2 import sales_leads
+from matchmaker2 import sales_leads, ml_pipeline_analytics
 import admin_panel
 import ae_dashboard
 
@@ -30,40 +29,9 @@ users_table = Table(
     Column('role', String),
     extend_existing=True,
 )
-
-ml_pipeline_analytics = Table(
-    'ml_pipeline_analytics', matchmaker2.metadata,
-    Column('id', Integer, primary_key=True),
-    Column('lead_id', Integer),
-    Column('crn', String),
-    
-    # Firmographics
-    Column('company_age_months', Integer),
-    Column('director_count', Integer),
-    
-    # Scraper Scores
-    Column('website_score', Integer),
-    Column('linkedin_score', Integer),
-    Column('overall_score', Integer),
-    
-    # Human Validations
-    Column('website_valid', Boolean),
-    Column('linkedin_valid', Boolean),
-    
-    # The Swipe
-    Column('is_worth_it', Boolean),
-    Column('rejection_reason', String),
-    Column('dwell_time_seconds', Integer),
-    
-    # The CRM Reality
-    Column('crm_status', String),
-    
-    # Audit
-    Column('swiped_by', String),
-    Column('created_at', DateTime, default=datetime.utcnow)
-)
-# matchmaker2 ran create_all before this table was defined, so run it
-# again here. It's safe: it only creates tables that don't exist yet.
+# ml_pipeline_analytics and sales_leads are both owned by matchmaker2 and
+# imported above. Only users_table is defined locally, so create_all here
+# picks that up. It's safe: it only creates tables that don't exist yet.
 matchmaker2.metadata.create_all(engine)
 
 # --- SESSION STATE INITIALIZATION ---
