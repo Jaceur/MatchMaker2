@@ -37,7 +37,7 @@ def render_dashboard(engine):
     
     with engine.connect() as conn:
         # Fetch a list of all non-admin users to populate the dropdown
-        users_df = pd.read_sql("SELECT username FROM users WHERE role != 'admin'", conn)
+        users_df = pd.read_sql("SELECT username FROM users", conn)
         user_list = users_df['username'].tolist() if not users_df.empty else ["No AEs found"]
         
         # Count how many leads are waiting in the pool
