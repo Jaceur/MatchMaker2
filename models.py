@@ -27,6 +27,10 @@ sales_leads = Table(
     Column('website_accurate', Boolean, default=None),
     Column('linkedin_accurate', Boolean, default=None),
     Column('contact_accurate', Boolean, default=None),
+    # Human-supplied replacements, filled in when a source is marked Incorrect
+    # on the swipe screen.
+    Column('corrected_website_url', String(500)),
+    Column('corrected_linkedin_url', String(500)),
     Column('rejection_reason', String(255)),
     Column('is_nabd', Boolean, default=False),
     Column('active_directors', String(255)),
@@ -61,6 +65,8 @@ ml_pipeline_analytics = Table(
     # Human Validations
     Column('website_valid', Boolean),
     Column('linkedin_valid', Boolean),
+    Column('corrected_website_url', String),
+    Column('corrected_linkedin_url', String),
 
     # The Swipe
     Column('is_worth_it', Boolean),

@@ -14,20 +14,21 @@ from leads import get_pending_leads, engineer_ml_features
 
 
 @st.fragment
-def validity_toggle(field_key, lead_id):
+def validity_toggle(field_key, lead_id, label):
     """A tick/cross pair the AE taps to mark a source correct or incorrect.
-    Wrapped in a fragment so tapping it reruns only this control — the lead card
-    and decision panel stay put. State is keyed per lead in session_state; read
-    it back elsewhere with _validity(). Defaults to Incorrect — that's the more
-    common verdict, so the common path is zero clicks."""
+    Wrapped in a fragment so tapping it (or typing a correction) reruns only this
+    control — the lead card and decision panel stay put. State is keyed per lead
+    in session_state; read it back elsewhere with _validity()/_corrected().
+    Defaults to Correct, since most scraped sources are right. Marking it
+    Incorrect opens a box to paste the right URL."""
     state_key = f"{field_key}_{lead_id}"
     if state_key not in st.session_state:
-        st.session_state[state_key] = False  # default: Incorrect
+        st.session_state[state_key] = True  # default: Correct
 
     current = st.session_state[state_key]
     c_ok, c_no = st.columns(2)
     # st.rerun() here is fragment-scoped (we're inside @st.fragment), so it only
-    # repaints the toggle to update the highlight — not the whole page.
+    # repaints the toggle — not the whole page.
     if c_ok.button("✅ Correct", key=f"{state_key}_ok", use_container_width=True,
                    type="primary" if current else "secondary"):
         st.session_state[state_key] = True
@@ -37,11 +38,44 @@ def validity_toggle(field_key, lead_id):
         st.session_state[state_key] = False
         st.rerun()
 
+    # When marked Incorrect, let the AE supply the correct URL.
+    if not st.session_state[state_key]:
+        st.text_input(
+            f"Correct {label} URL",
+            key=f"{field_key}_corrected_{lead_id}",
+            placeholder="https://...",
+        )
+
 
 def _validity(field_key, lead_id):
-    """Read a validity toggle's current value (False if it was never shown/set,
-    e.g. a lead with no website)."""
+    """Read a validity toggle's current value. Defaults to False when the toggle
+    was never shown (e.g. a lead with no website — nothing to vouch for). When
+    the toggle *is* shown it initialises itself to True, so an untouched source
+    reads as Correct."""
     return st.session_state.get(f"{field_key}_{lead_id}", False)
+
+
+def _corrected(field_key, lead_id):
+    """The AE-entered correct URL — but only when the source was marked Incorrect
+    (None otherwise, including when the box is left blank)."""
+    if _validity(field_key, lead_id):
+        return None
+    val = st.session_state.get(f"{field_key}_corrected_{lead_id}")
+    return val.strip() if val and val.strip() else None
+
+
+def _corrected_values(lead_id):
+    """Corrected-URL columns to APPLY to sales_leads — only for sources the AE
+    actually re-typed this session. Omitting a column preserves any existing
+    correction instead of nulling it (matters when a passed lead is re-handed)."""
+    out = {}
+    web = _corrected("web_val", lead_id)
+    if web is not None:
+        out["corrected_website_url"] = web
+    li = _corrected("li_val", lead_id)
+    if li is not None:
+        out["corrected_linkedin_url"] = li
+    return out
 
 
 PASS_REASONS = [
@@ -81,7 +115,11 @@ def pass_control(current_lead):
             # 1. Update live pipeline
             conn.execute(
                 update(sales_leads).where(sales_leads.c.id == current_lead['id'])
-                .values(status='archived', rejection_reason=rejection_reason)
+                .values(
+                    status='archived',
+                    rejection_reason=rejection_reason,
+                    **_corrected_values(current_lead['id']),
+                )
             )
             # 2. Log ML Data
             conn.execute(
@@ -90,6 +128,8 @@ def pass_control(current_lead):
                     company_age_months=age_months, director_count=dir_count,
                     website_score=score, linkedin_score=score, overall_score=score,
                     website_valid=web_valid, linkedin_valid=li_valid,
+                    corrected_website_url=_corrected("web_val", current_lead['id']) or current_lead.get('corrected_website_url'),
+                    corrected_linkedin_url=_corrected("li_val", current_lead['id']) or current_lead.get('corrected_linkedin_url'),
                     is_worth_it=False, rejection_reason=rejection_reason,
                     dwell_time_seconds=dwell_time, swiped_by=st.session_state.username
                 )
@@ -139,16 +179,22 @@ def main_app():
         col1, col2 = st.columns(2)
 
         with col1:
-            if current_lead['website_url']:
-                st.markdown(f"**🌐 Website:** [Visit Site]({current_lead['website_url']})")
-                validity_toggle("web_val", current_lead['id'])
+            # Prefer a previously-supplied correction (e.g. from when this lead
+            # was passed and is now being re-handed) over the scraped URL.
+            website = current_lead.get('corrected_website_url') or current_lead['website_url']
+            if website:
+                note = " ✏️ *corrected*" if current_lead.get('corrected_website_url') else ""
+                st.markdown(f"**🌐 Website:** [Visit Site]({website}){note}")
+                validity_toggle("web_val", current_lead['id'], "Website")
             else:
                 st.markdown("**🌐 Website:** ❌ Not Found")
 
         with col2:
-            if current_lead['linkedin_url']:
-                st.markdown(f"**💼 LinkedIn:** [View Profile]({current_lead['linkedin_url']})")
-                validity_toggle("li_val", current_lead['id'])
+            linkedin = current_lead.get('corrected_linkedin_url') or current_lead['linkedin_url']
+            if linkedin:
+                note = " ✏️ *corrected*" if current_lead.get('corrected_linkedin_url') else ""
+                st.markdown(f"**💼 LinkedIn:** [View Profile]({linkedin}){note}")
+                validity_toggle("li_val", current_lead['id'], "LinkedIn")
             else:
                 st.markdown("**💼 LinkedIn:** ❌ Not Found")
 
@@ -177,6 +223,7 @@ def main_app():
                             status='approved',
                             website_accurate=_validity("web_val", current_lead['id']),
                             linkedin_accurate=_validity("li_val", current_lead['id']),
+                            **_corrected_values(current_lead['id']),
                         )
                     )
                 # Advance locally — instant, no DB re-query.

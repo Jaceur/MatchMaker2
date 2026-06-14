@@ -19,7 +19,8 @@ def get_unclassified_leads(_engine, username: str):
     query = text("""
         SELECT id, crn, company_name, incorporation_date, active_directors,
                confidence_score, website_url, linkedin_url,
-               website_accurate, linkedin_accurate
+               website_accurate, linkedin_accurate,
+               corrected_website_url, corrected_linkedin_url
         FROM sales_leads sl
         WHERE assigned_ae_username = :username
           AND status = 'approved'
@@ -39,8 +40,8 @@ def get_classified_leads(_engine, username: str) -> pd.DataFrame:
         SELECT
             sl.company_name      AS "Company",
             sl.confidence_score  AS "Match %",
-            sl.website_url       AS "Website",
-            sl.linkedin_url      AS "LinkedIn",
+            COALESCE(sl.corrected_website_url, sl.website_url)   AS "Website",
+            COALESCE(sl.corrected_linkedin_url, sl.linkedin_url) AS "LinkedIn",
             m.crm_status         AS "CRM Status",
             sl.is_nabd           AS "NAB'd",
             DATE(sl.updated_at)  AS "Date Approved"
@@ -68,6 +69,8 @@ def classify_lead(engine, lead: dict, crm_status: str, username: str):
                 company_age_months=age_months, director_count=dir_count,
                 website_score=score, linkedin_score=score, overall_score=score,
                 website_valid=lead['website_accurate'], linkedin_valid=lead['linkedin_accurate'],
+                corrected_website_url=lead['corrected_website_url'],
+                corrected_linkedin_url=lead['corrected_linkedin_url'],
                 is_worth_it=True, crm_status=crm_status,
                 dwell_time_seconds=None, swiped_by=username
             )
@@ -89,11 +92,16 @@ def _classify_card(engine, lead: dict, username: str):
     with st.container(border=True):
         st.markdown(f"**🏢 {lead['company_name']}**  ·  Match {lead.get('confidence_score') or 0}%")
 
+        # Prefer the AE-supplied correction over the scraped URL; ✏️ flags it.
         links = []
-        if lead['website_url']:
-            links.append(f"[🌐 Website]({lead['website_url']})")
-        if lead['linkedin_url']:
-            links.append(f"[💼 LinkedIn]({lead['linkedin_url']})")
+        website = lead.get('corrected_website_url') or lead['website_url']
+        if website:
+            tag = " ✏️" if lead.get('corrected_website_url') else ""
+            links.append(f"[🌐 Website{tag}]({website})")
+        linkedin = lead.get('corrected_linkedin_url') or lead['linkedin_url']
+        if linkedin:
+            tag = " ✏️" if lead.get('corrected_linkedin_url') else ""
+            links.append(f"[💼 LinkedIn{tag}]({linkedin})")
         if links:
             st.markdown("  ·  ".join(links))
 
