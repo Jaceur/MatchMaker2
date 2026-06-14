@@ -111,21 +111,62 @@ def login_page():
 # ==========================================
 # PAGE 2: THE MAIN SWIPING APP
 # ==========================================
+def validity_toggle(field_key, lead_id, label):
+    """A tick/cross pair the AE taps to mark a source correct or incorrect.
+    Returns a bool. State is keyed per lead so each lead remembers its own
+    choice. Defaults to Incorrect — that's the more common verdict, so the
+    common path is zero clicks."""
+    state_key = f"{field_key}_{lead_id}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = False  # default: Incorrect
+
+    current = st.session_state[state_key]
+    c_ok, c_no = st.columns(2)
+    if c_ok.button("✅ Correct", key=f"{state_key}_ok", use_container_width=True,
+                   type="primary" if current else "secondary"):
+        st.session_state[state_key] = True
+        st.rerun()
+    if c_no.button("❌ Incorrect", key=f"{state_key}_no", use_container_width=True,
+                   type="primary" if not current else "secondary"):
+        st.session_state[state_key] = False
+        st.rerun()
+    return st.session_state[state_key]
+
+
+PASS_REASONS = [
+    "None Selected", "Bad Industry", "Too Small", "No Public Info",
+    "Competitor", "Out of Business", "Other",
+]
+
+
+def _refill_lead_queue():
+    """Pull this AE's pending leads into a session-held queue. Advancing to the
+    next lead then just pops the queue locally — no DB round-trip per swipe, so
+    the next lead appears instantly. We only re-query when the queue runs dry."""
+    get_pending_leads.clear()
+    st.session_state.lead_queue = list(get_pending_leads(st.session_state.username))
+
+
 def main_app():
     st.title("🔥 Matchmaker 2.0 Triage")
     st.write("Review your assigned leads. Validate the data, add context, and submit.")
     st.divider()
 
-    leads = get_pending_leads(st.session_state.username)
+    # Load once on entry, and top up from the DB only when we've worked through
+    # the local queue.
+    if 'lead_queue' not in st.session_state:
+        _refill_lead_queue()
+    if not st.session_state.lead_queue:
+        _refill_lead_queue()
 
-    if not leads:
+    if not st.session_state.lead_queue:
         st.success("🎉 Inbox Zero! You've triaged all your assigned leads.")
         if st.button("Check for New Leads"):
-            get_pending_leads.clear()
+            _refill_lead_queue()
             st.rerun()
         return
 
-    current_lead = leads[0]
+    current_lead = st.session_state.lead_queue[0]
 
     # --- THE HIDDEN DWELL TIMER ---
     # Start the clock the moment a new lead appears on the screen
@@ -147,7 +188,7 @@ def main_app():
         with col1:
             if current_lead['website_url']:
                 st.markdown(f"**🌐 Website:** [Visit Site]({current_lead['website_url']})")
-                web_valid = st.checkbox("Website is accurate", value=True, key="web_val")
+                web_valid = validity_toggle("web_val", current_lead['id'], "Website")
             else:
                 st.markdown("**🌐 Website:** ❌ Not Found")
                 web_valid = False
@@ -155,7 +196,7 @@ def main_app():
         with col2:
             if current_lead['linkedin_url']:
                 st.markdown(f"**💼 LinkedIn:** [View Profile]({current_lead['linkedin_url']})")
-                li_valid = st.checkbox("LinkedIn is accurate", value=True, key="li_val")
+                li_valid = validity_toggle("li_val", current_lead['id'], "LinkedIn")
             else:
                 st.markdown("**💼 LinkedIn:** ❌ Not Found")
                 li_valid = False
@@ -168,16 +209,17 @@ def main_app():
         col_pass, col_approve = st.columns(2)
 
         with col_pass:
-            # Two-step pass: only ask for the reason *after* the AE commits to
-            # archiving, so the reason dropdown doesn't distract during review.
-            if st.session_state.get('pending_pass') == current_lead['id']:
-                rejection_reason = st.selectbox(
-                    "Why are you passing?",
-                    ["Bad Industry", "Too Small", "No Public Info", "Competitor", "Out of Business", "Other"],
-                    key="rej_reason"
-                )
-                confirm, cancel = st.columns(2)
-                if confirm.button("Confirm Archive", type="primary", use_container_width=True):
+            # Pass in one shot: pick a reason (defaults to "None Selected"), then
+            # one click archives + logs + advances. No intermediate confirm step.
+            rejection_reason = st.selectbox(
+                "Reason for passing",
+                PASS_REASONS,
+                key=f"rej_{current_lead['id']}",
+            )
+            if st.button("❌ Pass (Archive)", use_container_width=True):
+                if rejection_reason == "None Selected":
+                    st.warning("Pick a reason before passing.")
+                else:
                     dwell_time = int(time.time() - st.session_state.start_time)
                     age_months, dir_count = matchmaker2.engineer_ml_features(current_lead)
 
@@ -198,21 +240,16 @@ def main_app():
                                 dwell_time_seconds=dwell_time, swiped_by=st.session_state.username
                             )
                         )
-                    st.session_state.pending_pass = None
+                    # Advance locally — instant, no DB re-query.
+                    st.session_state.lead_queue.pop(0)
                     get_pending_leads.clear()
-                    st.rerun()
-                if cancel.button("Cancel", use_container_width=True):
-                    st.session_state.pending_pass = None
-                    st.rerun()
-            else:
-                if st.button("❌ Pass (Archive)", use_container_width=True):
-                    st.session_state.pending_pass = current_lead['id']
                     st.rerun()
 
         with col_approve:
             # Approve is a fast yes: mark it approved and stash the validation
-            # checkboxes onto the lead. CRM classification happens later in
-            # "My Pipeline", where the ML row gets written.
+            # toggles onto the lead, then advance immediately. CRM classification
+            # happens later in "My Pipeline", where the ML row gets written.
+            st.markdown("&nbsp;")  # spacer to align the button with Pass
             if st.button("✅ Approve", type="primary", use_container_width=True):
                 with engine.begin() as conn:
                     conn.execute(
@@ -223,11 +260,15 @@ def main_app():
                             linkedin_accurate=li_valid,
                         )
                     )
-                st.session_state.pending_pass = None
+                # Advance locally — instant, no DB re-query.
+                st.session_state.lead_queue.pop(0)
                 get_pending_leads.clear()
                 st.rerun()
 
-    st.caption(f"{len(leads)} lead{'s' if len(leads) != 1 else ''} left to review")
+    st.caption(
+        f"{len(st.session_state.lead_queue)} lead"
+        f"{'s' if len(st.session_state.lead_queue) != 1 else ''} left to review"
+    )
 
 # ==========================================
 # ROUTING LOGIC
