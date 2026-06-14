@@ -83,6 +83,32 @@ def classify_lead(engine, lead: dict, crm_status: str, username: str):
     get_classified_leads.clear()
 
 
+@st.fragment
+def _classify_card(engine, lead: dict, username: str):
+    """One approved lead awaiting a CRM status. Picking a status reruns only this
+    card (not the other cards, the metrics, or the summary table below); saving
+    escalates to a full-app rerun so the lead drops off the list."""
+    with st.container(border=True):
+        st.markdown(f"**🏢 {lead['company_name']}**  ·  Match {lead.get('confidence_score') or 0}%")
+
+        links = []
+        if lead['website_url']:
+            links.append(f"[🌐 Website]({lead['website_url']})")
+        if lead['linkedin_url']:
+            links.append(f"[💼 LinkedIn]({lead['linkedin_url']})")
+        if links:
+            st.markdown("  ·  ".join(links))
+
+        col_sel, col_btn = st.columns([3, 1])
+        crm_status = col_sel.selectbox(
+            "CRM status", CRM_STATUS_OPTIONS,
+            key=f"crm_{lead['id']}", label_visibility="collapsed"
+        )
+        if col_btn.button("Save", key=f"save_{lead['id']}", type="primary", use_container_width=True):
+            classify_lead(engine, lead, crm_status, username)
+            st.rerun(scope="app")
+
+
 def render_ae_pipeline(engine, current_username: str):
     st.title("🚀 My Approved Pipeline")
     st.write("Set the CRM status for newly approved leads, then track your pipeline.")
@@ -95,25 +121,7 @@ def render_ae_pipeline(engine, current_username: str):
         st.caption("Classify each approved lead — this is what writes its ML training row.")
 
         for lead in pending:
-            with st.container(border=True):
-                st.markdown(f"**🏢 {lead['company_name']}**  ·  Match {lead.get('confidence_score') or 0}%")
-
-                links = []
-                if lead['website_url']:
-                    links.append(f"[🌐 Website]({lead['website_url']})")
-                if lead['linkedin_url']:
-                    links.append(f"[💼 LinkedIn]({lead['linkedin_url']})")
-                if links:
-                    st.markdown("  ·  ".join(links))
-
-                col_sel, col_btn = st.columns([3, 1])
-                crm_status = col_sel.selectbox(
-                    "CRM status", CRM_STATUS_OPTIONS,
-                    key=f"crm_{lead['id']}", label_visibility="collapsed"
-                )
-                if col_btn.button("Save", key=f"save_{lead['id']}", type="primary", use_container_width=True):
-                    classify_lead(engine, lead, crm_status, current_username)
-                    st.rerun()
+            _classify_card(engine, lead, current_username)
 
         st.divider()
 

@@ -111,17 +111,21 @@ def login_page():
 # ==========================================
 # PAGE 2: THE MAIN SWIPING APP
 # ==========================================
-def validity_toggle(field_key, lead_id, label):
+@st.fragment
+def validity_toggle(field_key, lead_id):
     """A tick/cross pair the AE taps to mark a source correct or incorrect.
-    Returns a bool. State is keyed per lead so each lead remembers its own
-    choice. Defaults to Incorrect — that's the more common verdict, so the
-    common path is zero clicks."""
+    Wrapped in a fragment so tapping it reruns only this control — the lead card
+    and decision panel stay put. State is keyed per lead in session_state; read
+    it back elsewhere with _validity(). Defaults to Incorrect — that's the more
+    common verdict, so the common path is zero clicks."""
     state_key = f"{field_key}_{lead_id}"
     if state_key not in st.session_state:
         st.session_state[state_key] = False  # default: Incorrect
 
     current = st.session_state[state_key]
     c_ok, c_no = st.columns(2)
+    # st.rerun() here is fragment-scoped (we're inside @st.fragment), so it only
+    # repaints the toggle to update the highlight — not the whole page.
     if c_ok.button("✅ Correct", key=f"{state_key}_ok", use_container_width=True,
                    type="primary" if current else "secondary"):
         st.session_state[state_key] = True
@@ -130,7 +134,12 @@ def validity_toggle(field_key, lead_id, label):
                    type="primary" if not current else "secondary"):
         st.session_state[state_key] = False
         st.rerun()
-    return st.session_state[state_key]
+
+
+def _validity(field_key, lead_id):
+    """Read a validity toggle's current value (False if it was never shown/set,
+    e.g. a lead with no website)."""
+    return st.session_state.get(f"{field_key}_{lead_id}", False)
 
 
 PASS_REASONS = [
@@ -145,6 +154,48 @@ def _refill_lead_queue():
     the next lead appears instantly. We only re-query when the queue runs dry."""
     get_pending_leads.clear()
     st.session_state.lead_queue = list(get_pending_leads(st.session_state.username))
+
+
+@st.fragment
+def pass_control(current_lead):
+    """Pass panel: reason dropdown + archive button. Changing the dropdown reruns
+    only this fragment (the lead card above stays put). Committing the pass
+    escalates to a full-app rerun so the next lead loads."""
+    rejection_reason = st.selectbox(
+        "Reason for passing", PASS_REASONS, key=f"rej_{current_lead['id']}"
+    )
+    if st.button("❌ Pass (Archive)", use_container_width=True):
+        if rejection_reason == "None Selected":
+            st.warning("Pick a reason before passing.")
+            return
+
+        score = current_lead.get('confidence_score') or 0
+        web_valid = _validity("web_val", current_lead['id'])
+        li_valid = _validity("li_val", current_lead['id'])
+        dwell_time = int(time.time() - st.session_state.start_time)
+        age_months, dir_count = matchmaker2.engineer_ml_features(current_lead)
+
+        with engine.begin() as conn:
+            # 1. Update live pipeline
+            conn.execute(
+                update(sales_leads).where(sales_leads.c.id == current_lead['id'])
+                .values(status='archived', rejection_reason=rejection_reason)
+            )
+            # 2. Log ML Data
+            conn.execute(
+                pg_insert(ml_pipeline_analytics).values(
+                    lead_id=current_lead['id'], crn=current_lead['crn'],
+                    company_age_months=age_months, director_count=dir_count,
+                    website_score=score, linkedin_score=score, overall_score=score,
+                    website_valid=web_valid, linkedin_valid=li_valid,
+                    is_worth_it=False, rejection_reason=rejection_reason,
+                    dwell_time_seconds=dwell_time, swiped_by=st.session_state.username
+                )
+            )
+        # Advance locally — instant, no DB re-query — then refresh the whole page.
+        st.session_state.lead_queue.pop(0)
+        get_pending_leads.clear()
+        st.rerun(scope="app")
 
 
 def main_app():
@@ -188,18 +239,16 @@ def main_app():
         with col1:
             if current_lead['website_url']:
                 st.markdown(f"**🌐 Website:** [Visit Site]({current_lead['website_url']})")
-                web_valid = validity_toggle("web_val", current_lead['id'], "Website")
+                validity_toggle("web_val", current_lead['id'])
             else:
                 st.markdown("**🌐 Website:** ❌ Not Found")
-                web_valid = False
 
         with col2:
             if current_lead['linkedin_url']:
                 st.markdown(f"**💼 LinkedIn:** [View Profile]({current_lead['linkedin_url']})")
-                li_valid = validity_toggle("li_val", current_lead['id'], "LinkedIn")
+                validity_toggle("li_val", current_lead['id'])
             else:
                 st.markdown("**💼 LinkedIn:** ❌ Not Found")
-                li_valid = False
 
         st.divider()
 
@@ -209,46 +258,14 @@ def main_app():
         col_pass, col_approve = st.columns(2)
 
         with col_pass:
-            # Pass in one shot: pick a reason (defaults to "None Selected"), then
-            # one click archives + logs + advances. No intermediate confirm step.
-            rejection_reason = st.selectbox(
-                "Reason for passing",
-                PASS_REASONS,
-                key=f"rej_{current_lead['id']}",
-            )
-            if st.button("❌ Pass (Archive)", use_container_width=True):
-                if rejection_reason == "None Selected":
-                    st.warning("Pick a reason before passing.")
-                else:
-                    dwell_time = int(time.time() - st.session_state.start_time)
-                    age_months, dir_count = matchmaker2.engineer_ml_features(current_lead)
-
-                    with engine.begin() as conn:
-                        # 1. Update live pipeline
-                        conn.execute(
-                            update(sales_leads).where(sales_leads.c.id == current_lead['id'])
-                            .values(status='archived', rejection_reason=rejection_reason)
-                        )
-                        # 2. Log ML Data
-                        conn.execute(
-                            pg_insert(ml_pipeline_analytics).values(
-                                lead_id=current_lead['id'], crn=current_lead['crn'],
-                                company_age_months=age_months, director_count=dir_count,
-                                website_score=score, linkedin_score=score, overall_score=score,
-                                website_valid=web_valid, linkedin_valid=li_valid,
-                                is_worth_it=False, rejection_reason=rejection_reason,
-                                dwell_time_seconds=dwell_time, swiped_by=st.session_state.username
-                            )
-                        )
-                    # Advance locally — instant, no DB re-query.
-                    st.session_state.lead_queue.pop(0)
-                    get_pending_leads.clear()
-                    st.rerun()
+            # Reason dropdown + archive button live in a fragment, so picking a
+            # reason doesn't reload the whole lead view.
+            pass_control(current_lead)
 
         with col_approve:
             # Approve is a fast yes: mark it approved and stash the validation
-            # toggles onto the lead, then advance immediately. CRM classification
-            # happens later in "My Pipeline", where the ML row gets written.
+            # toggles onto the lead, then advance immediately. It changes the page
+            # (next lead), so it stays a normal full-app button — not a fragment.
             st.markdown("&nbsp;")  # spacer to align the button with Pass
             if st.button("✅ Approve", type="primary", use_container_width=True):
                 with engine.begin() as conn:
@@ -256,8 +273,8 @@ def main_app():
                         update(sales_leads).where(sales_leads.c.id == current_lead['id'])
                         .values(
                             status='approved',
-                            website_accurate=web_valid,
-                            linkedin_accurate=li_valid,
+                            website_accurate=_validity("web_val", current_lead['id']),
+                            linkedin_accurate=_validity("li_val", current_lead['id']),
                         )
                     )
                 # Advance locally — instant, no DB re-query.

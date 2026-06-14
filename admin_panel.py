@@ -3,6 +3,29 @@ import pandas as pd
 from sqlalchemy import text
 import matchmaker2
 
+
+@st.fragment
+def _allocation_controls(user_list, unassigned_count):
+    """Lead-assignment controls. Changing the AE or the lead count reruns only
+    this fragment, so the heavier metrics / AE-performance / preview queries
+    further down the page don't re-run on every tweak. Actually assigning leads
+    escalates to a full-app rerun to refresh those metrics."""
+    col_a, col_b, col_c = st.columns([2, 2, 1])
+    with col_a:
+        selected_ae = st.selectbox("Select Account Executive", user_list)
+    with col_b:
+        num_leads = st.number_input("Number of Leads", min_value=1, max_value=500, value=10)
+    with col_c:
+        st.markdown("<br>", unsafe_allow_html=True)  # Aligns the button with the inputs
+        if st.button("Assign Leads", type="primary", use_container_width=True):
+            if unassigned_count == 0:
+                st.error("No unassigned leads available in the pool!")
+            else:
+                assigned = matchmaker2.assign_leads_to_ae(selected_ae, num_leads)
+                st.success(f"Successfully assigned {assigned} leads to {selected_ae}!")
+                st.rerun(scope="app")  # Refresh the page to update the metrics
+
+
 def render_dashboard(engine):
     st.title("⚙️ Admin Control Center")
     st.write("Manage the Matchmaker 2.0 pipeline engine and monitor team output.")
@@ -45,20 +68,7 @@ def render_dashboard(engine):
 
     st.caption(f"Unassigned leads ready for distribution: **{unassigned_count}**")
 
-    col_a, col_b, col_c = st.columns([2, 2, 1])
-    with col_a:
-        selected_ae = st.selectbox("Select Account Executive", user_list)
-    with col_b:
-        num_leads = st.number_input("Number of Leads", min_value=1, max_value=500, value=10)
-    with col_c:
-        st.markdown("<br>", unsafe_allow_html=True) # Aligns the button with the inputs
-        if st.button("Assign Leads", type="primary", use_container_width=True):
-            if unassigned_count == 0:
-                st.error("No unassigned leads available in the pool!")
-            else:
-                assigned = matchmaker2.assign_leads_to_ae(selected_ae, num_leads)
-                st.success(f"Successfully assigned {assigned} leads to {selected_ae}!")
-                st.rerun() # Refreshes the page to update the metrics
+    _allocation_controls(user_list, unassigned_count)
 
     st.divider()
 
