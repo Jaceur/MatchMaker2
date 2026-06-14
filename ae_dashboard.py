@@ -3,10 +3,8 @@ import pandas as pd
 from sqlalchemy import text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-# matchmaker2 owns the schema + shared feature engineering. ae_dashboard
-# imports from it (never from mmapp) to avoid a circular import.
-import matchmaker2
-from matchmaker2 import sales_leads, ml_pipeline_analytics
+from models import sales_leads, ml_pipeline_analytics
+from leads import engineer_ml_features
 
 CRM_STATUS_OPTIONS = ["Net New", "Existing Lead", "Existing Account", "NAB", "Disqualified"]
 
@@ -60,7 +58,7 @@ def classify_lead(engine, lead: dict, crm_status: str, username: str):
     """Commit an AE's CRM-status decision: write the ML training row and
     flag NAB on the live lead. This is the deferred half of 'Approve'."""
     score = lead.get('confidence_score') or 0
-    age_months, dir_count = matchmaker2.engineer_ml_features(lead)
+    age_months, dir_count = engineer_ml_features(lead)
 
     with engine.begin() as conn:
         # 1. Log ML Data (dwell isn't captured here — it's a swipe-screen metric)

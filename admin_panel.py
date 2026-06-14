@@ -1,7 +1,10 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
-import matchmaker2
+
+from sourcing import run_sourcing_pipeline
+from enrichment import run_enrichment_pipeline
+from leads import clear_all_data, assign_leads_to_ae
 
 
 @st.fragment
@@ -21,7 +24,7 @@ def _allocation_controls(user_list, unassigned_count):
             if unassigned_count == 0:
                 st.error("No unassigned leads available in the pool!")
             else:
-                assigned = matchmaker2.assign_leads_to_ae(selected_ae, num_leads)
+                assigned = assign_leads_to_ae(selected_ae, num_leads)
                 st.success(f"Successfully assigned {assigned} leads to {selected_ae}!")
                 st.rerun(scope="app")  # Refresh the page to update the metrics
 
@@ -38,19 +41,19 @@ def render_dashboard(engine):
     with col1:
         if st.button("📡 Run Sourcing API", use_container_width=True):
             with st.spinner("Querying Companies House..."):
-                matchmaker2.run_sourcing_pipeline() 
+                run_sourcing_pipeline()
             st.success("New leads sourced!")
 
     with col2:
         if st.button("🧠 Run Enrichment", use_container_width=True):
             with st.spinner("Scraping and scoring the web..."):
-                matchmaker2.run_enrichment_pipeline()
+                run_enrichment_pipeline()
             st.success("Leads enriched!")
 
     with col3:
         if st.button("🛑 Clear Database", type="primary", use_container_width=True):
             with st.spinner("Deleting records..."):
-                matchmaker2.clear_all_data()
+                clear_all_data()
             st.warning("Database wiped.")
 
     st.divider()
