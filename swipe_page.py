@@ -47,6 +47,20 @@ def validity_toggle(field_key, lead_id, label):
         )
 
 
+@st.fragment
+def correction_input(field_key, lead_id, label):
+    """Standalone box for a source the scraper couldn't find at all. Shares the
+    same session key as validity_toggle's correction box, so whatever the AE
+    types flows through _corrected()/_corrected_values() unchanged. (A missing
+    source already counts as 'not accurate' — _validity returns False when no
+    toggle was shown.) Fragment-wrapped so typing doesn't reload the page."""
+    st.text_input(
+        f"Add correct {label} URL",
+        key=f"{field_key}_corrected_{lead_id}",
+        placeholder="https://...",
+    )
+
+
 def _validity(field_key, lead_id):
     """Read a validity toggle's current value. Defaults to False when the toggle
     was never shown (e.g. a lead with no website — nothing to vouch for). When
@@ -188,6 +202,7 @@ def main_app():
                 validity_toggle("web_val", current_lead['id'], "Website")
             else:
                 st.markdown("**🌐 Website:** ❌ Not Found")
+                correction_input("web_val", current_lead['id'], "Website")
 
         with col2:
             linkedin = current_lead.get('corrected_linkedin_url') or current_lead['linkedin_url']
@@ -197,6 +212,7 @@ def main_app():
                 validity_toggle("li_val", current_lead['id'], "LinkedIn")
             else:
                 st.markdown("**💼 LinkedIn:** ❌ Not Found")
+                correction_input("li_val", current_lead['id'], "LinkedIn")
 
         st.divider()
 

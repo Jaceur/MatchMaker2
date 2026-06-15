@@ -1,13 +1,22 @@
 """Enrichment: scrape + score each sourced lead's website and LinkedIn."""
 import re
+from urllib.parse import urlparse
 
 import requests
 from ddgs import DDGS
 from bs4 import BeautifulSoup
+from rapidfuzz import fuzz  # pip install rapidfuzz
 from sqlalchemy import select, update
 
 from database import engine
 from models import sales_leads
+
+# Legal/structural words that add no identifying signal when matching a company
+# name against a LinkedIn slug.
+LEGAL_SUFFIXES = {
+    "ltd", "limited", "plc", "llp", "inc", "incorporated", "corp",
+    "corporation", "co", "company", "group", "holdings", "uk", "gmbh",
+}
 
 # Sites we never want to mistake for a company's own website.
 # Defined once here, instead of being rebuilt for every single lead.
@@ -57,44 +66,67 @@ def score_website_match(url, company_name_clean):
     return min(score, 100)
 
 
+def normalise_name(name: str) -> str:
+    name = name.lower().replace("&", "and")
+    name = re.sub(r"[^a-z0-9\s]", " ", name)          # drop punctuation/accents-handling upstream
+    tokens = [t for t in name.split() if t and t not in LEGAL_SUFFIXES]
+    return " ".join(tokens)
+
+
+def extract_company_slug(url: str) -> str:
+    parsed = urlparse(url)                             # strips query + fragment
+    if "linkedin.com" not in parsed.netloc:
+        return ""
+    parts = [p for p in parsed.path.split("/") if p]
+    if "company" not in parts:
+        return ""
+    idx = parts.index("company")
+    return parts[idx + 1].lower() if idx + 1 < len(parts) else ""
+
+
+def contains_word(text: str, phrase: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(phrase)}\b", text, re.IGNORECASE))
+
+
 def score_linkedin_match(url, title, snippet, company_name_clean):
+    slug = extract_company_slug(url)
+    if not slug:                                       # not a /company/ URL -> disqualify
+        return 0
+
+    name = normalise_name(company_name_clean)          # e.g. "revolut ltd" -> "revolut"
+    name_compact = name.replace(" ", "")
+    slug_compact = slug.replace("-", "")
+    title = (title or "")
+    snippet = (snippet or "")
+
     score = 0
-    clean_name_lower = company_name_clean.lower()
-    clean_name_no_spaces = clean_name_lower.replace(" ", "")
-    first_word = clean_name_lower.split()[0] if clean_name_lower else ""
 
-    url_parts = url.rstrip('/').split('/')
-    slug = url_parts[-1].lower() if 'company' in url_parts else ""
-    slug_no_hyphens = slug.replace("-", "")
+    # SIGNAL 1: slug similarity (fuzzy, threshold-gated)
+    if name_compact == slug_compact:
+        score += 40
+    else:
+        ratio = fuzz.ratio(name_compact, slug_compact)
+        if ratio >= 90:
+            score += 30
+        elif ratio >= 80:
+            score += 15
+        # below 80 contributes nothing — no more "starts with 'the'" matches
 
-    # SIGNAL 1: URL Slug Match (Stricter)
-    if clean_name_no_spaces == slug_no_hyphens:
-        score += 40  # Exact match
-    elif slug_no_hyphens.startswith(clean_name_no_spaces):
-        score += 20  # Starts with (e.g., revolut-ltd)
-    elif first_word and slug_no_hyphens.startswith(first_word):
-        score += 5   # First word only (Severely nerfed)
-
-    # SIGNAL 2: Search Engine Corroboration
-    if title and clean_name_lower in title.lower():
+    # SIGNAL 2: corroboration (word-boundary, not substring)
+    if contains_word(title, name):
         score += 30
-    if snippet and clean_name_lower in snippet.lower():
+    if contains_word(snippet, name):
         score += 20
 
-    # SIGNAL 3: Geographic Context (The Companies House Advantage)
-    if snippet and any(uk_term in snippet.lower() for uk_term in [' uk ', 'united kingdom', 'london', 'england']):
+    # SIGNAL 3: geography (looser boundaries)
+    if re.search(r"\b(uk|united kingdom|london|england)\b", snippet, re.IGNORECASE):
         score += 10
 
-    # PENALTIES (Aggressive filtering)
-    url_lower = url.lower()
-    if any(bad in url_lower for bad in ['/showcase/', '/school/', '/pulse/', '/directory/']):
+    # PENALTIES
+    if any(bad in url.lower() for bad in ("/showcase/", "/school/", "/pulse/", "/directory/")):
         score -= 50
 
-    # Penalize if the snippet clearly indicates a foreign branch
-    if snippet and any(foreign in snippet.lower() for foreign in [' usa ', ' ny ', 'california', 'australia', 'canada']):
-        score -= 20
-
-    return min(max(score, 0), 100)  # Ensure it stays between 0 and 100
+    return min(max(score, 0), 100)
 
 
 def enrich_one_lead(record):
