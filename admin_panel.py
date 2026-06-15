@@ -4,7 +4,7 @@ from sqlalchemy import text
 
 from sourcing import run_sourcing_pipeline
 from enrichment import run_enrichment_pipeline
-from leads import clear_all_data, assign_leads_to_ae
+from leads import clear_all_data, clear_pipeline_data, assign_leads_to_ae
 
 
 @st.fragment
@@ -46,15 +46,45 @@ def render_dashboard(engine):
 
     with col2:
         if st.button("🧠 Run Enrichment", use_container_width=True):
-            with st.spinner("Scraping and scoring the web..."):
-                run_enrichment_pipeline()
-            st.success("Leads enriched!")
+            progress_bar = st.progress(0.0, text="Starting enrichment...")
+
+            def _on_progress(done, total, company_name):
+                progress_bar.progress(
+                    done / total if total else 1.0,
+                    text=f"Enriched {done}/{total} — {company_name}",
+                )
+
+            summary = run_enrichment_pipeline(progress_callback=_on_progress)
+            progress_bar.empty()
+            st.success(summary)
 
     with col3:
-        if st.button("🛑 Clear Database", type="primary", use_container_width=True):
-            with st.spinner("Deleting records..."):
-                clear_all_data()
-            st.warning("Database wiped.")
+        if st.button("🛑 Clear Database", use_container_width=True,
+                     help="Clears the sourcing/working pool. Approved pipeline leads are preserved."):
+            with st.spinner("Clearing working pool..."):
+                summary = clear_all_data()
+            st.warning(summary)
+
+    # --- CLEAR PIPELINE (destructive — two-step confirmation) ---
+    if st.session_state.get("confirm_clear_pipeline"):
+        st.error(
+            "⚠️ This permanently clears the **approved pipeline**. A copy is kept "
+            "in `pipeline_archive`, but it's removed from the live app. Are you sure?"
+        )
+        confirm, cancel = st.columns(2)
+        if confirm.button("Yes, clear the pipeline", type="primary", use_container_width=True):
+            with st.spinner("Archiving + clearing pipeline..."):
+                summary = clear_pipeline_data()
+            st.session_state.confirm_clear_pipeline = False
+            st.success(summary)
+        if cancel.button("Cancel", use_container_width=True):
+            st.session_state.confirm_clear_pipeline = False
+            st.rerun()
+    else:
+        if st.button("🧹 Clear Pipeline", use_container_width=True,
+                     help="Archives approved leads to pipeline_archive, then clears them from the live pipeline."):
+            st.session_state.confirm_clear_pipeline = True
+            st.rerun()
 
     st.divider()
 

@@ -92,6 +92,43 @@ users_table = Table(
     Column('role', String),
 )
 
+# ==========================================
+# PIPELINE ARCHIVE
+# ==========================================
+# A permanent home for approved ("won") leads. "Clear Pipeline" snapshots
+# approved rows in here before removing them from the live table, so they
+# survive a wipe. Mirrors sales_leads' data columns but drops the unique
+# constraints (an archive may legitimately hold historical duplicates).
+pipeline_archive = Table(
+    'pipeline_archive', metadata,
+    Column('archive_id', Integer, primary_key=True, autoincrement=True),
+    Column('id', Integer),                 # original sales_leads id
+    Column('crn', String(20)),
+    Column('company_name', String(255)),
+    Column('incorporation_date', Date),
+    Column('sic_codes', String(255)),
+    Column('website_url', String(500)),
+    Column('linkedin_url', String(500)),
+    Column('contact_email', String(255)),
+    Column('website_accurate', Boolean),
+    Column('linkedin_accurate', Boolean),
+    Column('contact_accurate', Boolean),
+    Column('corrected_website_url', String(500)),
+    Column('corrected_linkedin_url', String(500)),
+    Column('rejection_reason', String(255)),
+    Column('is_nabd', Boolean),
+    Column('active_directors', String(255)),
+    Column('linkedin_raw_title', String),
+    Column('linkedin_raw_snippet', String),
+    Column('status', String(50)),
+    Column('assigned_ae_username', String(100)),
+    Column('assigned_date', DateTime),
+    Column('confidence_score', Integer),
+    Column('created_at', DateTime),
+    Column('updated_at', DateTime),
+    Column('archived_at', DateTime, default=datetime.utcnow),
+)
+
 # Every table is now declared — build them all in one shot. Safe to run on each
 # boot: it only creates tables that don't already exist.
 metadata.create_all(engine)

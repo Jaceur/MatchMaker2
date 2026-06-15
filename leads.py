@@ -7,10 +7,10 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import select, delete, text
+from sqlalchemy import select, delete, insert, text
 
 from database import engine
-from models import sales_leads
+from models import sales_leads, pipeline_archive
 
 
 # ==========================================
@@ -83,14 +83,47 @@ def assign_leads_to_ae(username, num_leads):
 
 
 def clear_database():
-    print("Connecting to database to initiate wipe...")
+    """Wipe the working pool — sourced / ready_for_swipe / passed leads — but
+    PRESERVE approved pipeline leads. Returns how many working leads were removed.
+    """
+    print("Clearing working pool (approved pipeline preserved)...")
     with engine.begin() as connection:
-        result = connection.execute(delete(sales_leads))
-        print(f"SUCCESS: Wiped {result.rowcount} records from the sales_leads table.")
+        # is_distinct_from keeps NULL-status rows in the 'delete' set too.
+        result = connection.execute(
+            delete(sales_leads).where(sales_leads.c.status.is_distinct_from('approved'))
+        )
+        print(f"SUCCESS: Removed {result.rowcount} working leads; approved pipeline kept.")
         return result.rowcount
 
 
 def clear_all_data():
-    print("UI Triggered: Wiping database...")
+    print("UI Triggered: Clearing working pool...")
     wiped = clear_database()
-    return f"Database wiped. {wiped} records deleted."
+    return f"Cleared {wiped} working leads. Approved pipeline preserved."
+
+
+def clear_pipeline():
+    """Snapshot approved pipeline leads into pipeline_archive, then remove them
+    from the live table. Returns how many were archived + cleared."""
+    print("Archiving + clearing approved pipeline...")
+    snapshot_cols = [c.name for c in sales_leads.c]
+    with engine.begin() as connection:
+        # 1. Copy approved leads into the permanent archive.
+        connection.execute(
+            insert(pipeline_archive).from_select(
+                snapshot_cols,
+                select(sales_leads).where(sales_leads.c.status == 'approved'),
+            )
+        )
+        # 2. Remove them from the live pipeline.
+        result = connection.execute(
+            delete(sales_leads).where(sales_leads.c.status == 'approved')
+        )
+        print(f"SUCCESS: Archived + cleared {result.rowcount} pipeline leads.")
+        return result.rowcount
+
+
+def clear_pipeline_data():
+    print("UI Triggered: Clearing pipeline...")
+    moved = clear_pipeline()
+    return f"Archived + cleared {moved} pipeline leads."

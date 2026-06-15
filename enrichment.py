@@ -18,6 +18,18 @@ LEGAL_SUFFIXES = {
     "corporation", "co", "company", "group", "holdings", "uk", "gmbh",
 }
 
+# Non-UK entity types. Every lead is a UK Companies House Ltd, so a LinkedIn slug
+# ending in one of these is usually the wrong (foreign) entity. We DOCK it rather
+# than disqualify it: a high-confidence match to a global brand can still clear
+# the bar (its UK Ltd may be that brand's subsidiary).
+FOREIGN_LEGAL_FORMS = {"inc", "llc", "gmbh", "ag", "corp", "sarl", "bv", "pty", "srl"}
+FOREIGN_SLUG_PENALTY = 30
+
+# A website must score at least this to be auto-accepted. Higher = stricter
+# (prefer "Not Found" over a plausible-but-wrong domain). Tune up toward 60 if
+# too many wrong sites slip through.
+WEBSITE_MIN_SCORE = 50
+
 # Sites we never want to mistake for a company's own website.
 # Defined once here, instead of being rebuilt for every single lead.
 BLOCKED_DOMAINS = [
@@ -25,7 +37,7 @@ BLOCKED_DOMAINS = [
     'instagram.com', 'twitter.com', 'yelp.co.uk', 'yell.com', 'companycheck.co.uk',
     'sparklane-group', 'theladders.com', 'bloomberg.com', 'wikipedia.org',
     'crunchbase.com', 'pitchbook.com', 'zoominfo.com', 'dunandbradstreet',
-    'apollo.io', 'glassdoor', 'suite.endole'
+    'apollo.io', 'glassdoor', 'suite.endole', 'globaldatabase'
 ]
 
 
@@ -126,6 +138,11 @@ def score_linkedin_match(url, title, snippet, company_name_clean):
     if any(bad in url.lower() for bad in ("/showcase/", "/school/", "/pulse/", "/directory/")):
         score -= 50
 
+    # Non-UK entity type in the slug (e.g. rpa-engineering-inc) — soft penalty so
+    # a strong global-brand match survives but a weak foreign one is filtered out.
+    if set(slug.split("-")) & FOREIGN_LEGAL_FORMS:
+        score -= FOREIGN_SLUG_PENALTY
+
     return min(max(score, 0), 100)
 
 
@@ -163,7 +180,7 @@ def enrich_one_lead(record):
                     confidence = score_website_match(raw_link, company_name_clean)
                     if confidence > best_score:
                         best_score, best_url = confidence, raw_link
-                if best_score >= 40:
+                if best_score >= WEBSITE_MIN_SCORE:
                     found_domain = best_url
             except Exception as e:
                 print(f"DDG Website Search failed: {e}")
@@ -171,7 +188,9 @@ def enrich_one_lead(record):
             # --- LinkedIn lookup ---
             try:
                 strict_query = f'{company_name_strict} UK site:linkedin.com/company/'
-                results = list(ddgs.text(strict_query, max_results=3))
+                # LinkedIn /company/ pages are sparsely indexed by DDG, so pull a
+                # deeper result set — the scorer still gates quality below.
+                results = list(ddgs.text(strict_query, max_results=8))
                 best_li_url = None
                 for result in results:
                     raw_link = result.get('href', '')
@@ -192,7 +211,7 @@ def enrich_one_lead(record):
         print(f"Could not start search session: {e}")
 
     # --- Combine the two scores into one confidence number ---
-    web_status = "high" if best_score >= 70 else "low" if best_score >= 40 else "none"
+    web_status = "high" if best_score >= 70 else "low" if best_score >= WEBSITE_MIN_SCORE else "none"
     li_status = "high" if best_li_score >= 70 else "low" if best_li_score >= 40 else "none"
     statuses = [web_status, li_status]
 
@@ -223,7 +242,14 @@ def enrich_one_lead(record):
     }
 
 
-def enrich_sourced_leads(limit=None):
+def enrich_sourced_leads(limit=None, progress_callback=None):
+    """Enrich every 'sourced' lead, saving each as it goes.
+
+    progress_callback, if given, is called once per lead as
+    progress_callback(done, total, company_name) — `done` leads finished out of
+    `total`, plus the name of the one just completed — so a UI can drive a live
+    progress bar.
+    """
     print("Starting enrichment phase...")
 
     # Step 1: a quick in-and-out trip to the database to get the list.
@@ -237,7 +263,8 @@ def enrich_sourced_leads(limit=None):
         print("No new leads to enrich.")
         return 0
 
-    print(f"Found {len(records_to_enrich)} leads to enrich...")
+    total = len(records_to_enrich)
+    print(f"Found {total} leads to enrich...")
 
     # Step 2: do the slow internet work one lead at a time, and save each
     # result immediately. If the batch dies at lead 80, leads 1-79 are
@@ -252,12 +279,14 @@ def enrich_sourced_leads(limit=None):
                 .values(**enrichment)
             )
         enriched_count += 1
+        if progress_callback:
+            progress_callback(enriched_count, total, record.company_name)
 
     print("\nEnrichment batch complete!")
     return enriched_count
 
 
-def run_enrichment_pipeline():
+def run_enrichment_pipeline(progress_callback=None):
     print("UI Triggered: Enrichment Pipeline...")
-    count = enrich_sourced_leads(limit=100)
+    count = enrich_sourced_leads(limit=100, progress_callback=progress_callback)
     return f"Enrichment complete! {count} leads processed."
