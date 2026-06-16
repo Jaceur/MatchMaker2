@@ -11,6 +11,12 @@ from sqlalchemy import select, delete, insert, text
 from database import engine
 from models import sales_leads, pipeline_archive
 
+# Enriched leads scoring AT OR BELOW this are "Tier 4" — held back from AEs until
+# the scoring model is good enough to lower the bar. Allocation and the swipe
+# queue only surface leads scoring strictly ABOVE it. Lower this one number to
+# release more leads; no data moves.
+TIER_THRESHOLD = 60
+
 
 # ==========================================
 # FEATURE ENGINEERING
@@ -68,6 +74,7 @@ def get_pending_leads(ae_username):
             .where(
                 (sales_leads.c.status == 'ready_for_swipe')
                 & (sales_leads.c.assigned_ae_username == ae_username)
+                & (sales_leads.c.confidence_score > TIER_THRESHOLD)  # never surface Tier 4
             )
             .order_by(sales_leads.c.confidence_score.desc())
         )
@@ -88,6 +95,7 @@ def assign_leads_to_ae(username, num_leads):
             WHERE id IN (
                 SELECT id FROM sales_leads
                 WHERE status = 'ready_for_swipe' AND assigned_ae_username IS NULL
+                  AND confidence_score > :threshold
                 ORDER BY confidence_score DESC
                 LIMIT :limit
             )
@@ -96,7 +104,8 @@ def assign_leads_to_ae(username, num_leads):
         result = connection.execute(assign_query, {
             "username": username,
             "now": datetime.utcnow(),
-            "limit": num_leads
+            "limit": num_leads,
+            "threshold": TIER_THRESHOLD,
         })
 
         return result.rowcount

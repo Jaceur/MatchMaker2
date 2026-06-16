@@ -4,7 +4,7 @@ from sqlalchemy import text
 
 from sourcing import run_sourcing_pipeline
 from enrichment import run_enrichment_pipeline
-from leads import clear_all_data, clear_pipeline_data, assign_leads_to_ae
+from leads import clear_all_data, clear_pipeline_data, assign_leads_to_ae, TIER_THRESHOLD
 
 
 # ==========================================
@@ -22,16 +22,39 @@ def _get_user_list(_engine):
 
 @st.cache_data(ttl=120)
 def _get_pipeline_stats(_engine):
+    """All Pipeline Health counts in one round-trip. Tier 4 = enriched leads
+    scoring at/below the threshold; Tier 3+ is everything else."""
+    query = text("""
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (
+                WHERE status <> 'sourced' AND confidence_score <= :threshold
+            ) AS tier4,
+            COUNT(*) FILTER (WHERE status = 'sourced') AS awaiting_enrichment,
+            COUNT(*) FILTER (
+                WHERE status = 'ready_for_swipe'
+                  AND assigned_ae_username IS NULL
+                  AND confidence_score > :threshold
+            ) AS awaiting_allocation,
+            AVG(confidence_score) FILTER (
+                WHERE status <> 'sourced' AND confidence_score > :threshold
+            ) AS avg_tier3plus
+        FROM sales_leads
+    """)
     with _engine.connect() as conn:
-        unassigned = conn.execute(text(
-            "SELECT COUNT(*) FROM sales_leads "
-            "WHERE status = 'ready_for_swipe' AND assigned_ae_username IS NULL"
-        )).scalar()
-        total = conn.execute(text("SELECT COUNT(*) FROM sales_leads")).scalar()
-        enriched = conn.execute(text(
-            "SELECT COUNT(*) FROM sales_leads WHERE status != 'sourced'"
-        )).scalar()
-    return {"unassigned": unassigned, "total": total, "enriched": enriched}
+        row = conn.execute(query, {"threshold": TIER_THRESHOLD}).mappings().fetchone()
+
+    stats = dict(row) if row else {}
+    total = stats.get('total') or 0
+    tier4 = stats.get('tier4') or 0
+    return {
+        "total": total,
+        "tier4": tier4,
+        "tier3plus": total - tier4,
+        "awaiting_enrichment": stats.get('awaiting_enrichment') or 0,
+        "awaiting_allocation": stats.get('awaiting_allocation') or 0,
+        "avg_tier3plus": float(stats.get('avg_tier3plus') or 0),
+    }
 
 
 @st.cache_data(ttl=120)
@@ -98,6 +121,17 @@ def _allocation_controls(user_list, unassigned_count):
 def render_dashboard(engine):
     st.title("⚙️ Admin Control Center")
     st.write("Manage the Matchmaker 2.0 pipeline engine and monitor team output.")
+
+    stats = _get_pipeline_stats(engine)
+
+    # --- TIER 4 QUICK PANEL ---
+    with st.container(border=True):
+        st.metric(
+            "🗂️ Tier 4 Leads (held back from AEs)", stats['tier4'],
+            help=(f"Enriched leads scoring ≤ {TIER_THRESHOLD}%. Not sent to AEs. "
+                  "Lower the threshold as the model improves to release more."),
+        )
+
     st.divider()
 
     # --- SECTION 1: THE PIPELINE CONTROLS ---
@@ -162,25 +196,28 @@ def render_dashboard(engine):
     st.markdown("### 🎯 Manual Lead Allocation")
 
     user_list = _get_user_list(engine)
-    stats = _get_pipeline_stats(engine)
 
-    st.caption(f"Unassigned leads ready for distribution: **{stats['unassigned']}**")
+    st.caption(f"Tier 3+ leads awaiting allocation: **{stats['awaiting_allocation']}**")
 
-    _allocation_controls(user_list, stats['unassigned'])
+    _allocation_controls(user_list, stats['awaiting_allocation'])
 
     st.divider()
 
     # --- SECTION 2: LIVE METRICS ---
     st.markdown("### 📊 Pipeline Health")
+    st.caption(
+        f"Tier threshold: leads scoring **above {TIER_THRESHOLD}%** are sent to AEs. "
+        "Lower it as the model improves."
+    )
 
-    total_leads = stats['total']
-    enriched_leads = stats['enriched']
-    enriched_pct = round((enriched_leads / total_leads) * 100, 1) if total_leads > 0 else 0.0
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Leads (incl. Tier 4)", stats['total'])
+    c2.metric("Tier 3+ Leads", stats['tier3plus'])
+    c3.metric("Awaiting Enrichment", stats['awaiting_enrichment'])
 
-    kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric(label="Total Leads in System", value=total_leads)
-    kpi2.metric(label="Enriched & Ready", value=enriched_leads)
-    kpi3.metric(label="Enrichment Rate", value=f"{enriched_pct}%")
+    c4, c5 = st.columns(2)
+    c4.metric("Avg Tier 3+ Score", f"{stats['avg_tier3plus']:.0f}%")
+    c5.metric("Awaiting Allocation", stats['awaiting_allocation'])
 
     st.markdown("<br>", unsafe_allow_html=True)
 
