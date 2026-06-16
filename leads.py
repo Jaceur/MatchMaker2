@@ -6,7 +6,6 @@ are shared by the UI pages and the CLI.
 from datetime import datetime
 
 import pandas as pd
-import streamlit as st
 from sqlalchemy import select, delete, insert, text
 
 from database import engine
@@ -35,13 +34,34 @@ def engineer_ml_features(current_lead):
     return company_age_months, director_count
 
 
+def build_ml_row(lead, swiped_by, **overrides):
+    """Build the fields the Pass and Approve paths share when logging to
+    ml_pipeline_analytics, then layer on per-decision values via `overrides`
+    (is_worth_it, crm_status, rejection_reason, dwell_time_seconds, the
+    website/linkedin verdicts, corrected URLs). Keeps the three score columns
+    distinct instead of triple-storing one number."""
+    age_months, dir_count = engineer_ml_features(lead)
+    row = {
+        "lead_id": lead["id"],
+        "crn": lead["crn"],
+        "company_age_months": age_months,
+        "director_count": dir_count,
+        "website_score": lead.get("website_score") or 0,
+        "linkedin_score": lead.get("linkedin_score") or 0,
+        "overall_score": lead.get("confidence_score") or 0,
+        "swiped_by": swiped_by,
+    }
+    row.update(overrides)
+    return row
+
+
 # ==========================================
 # DATA LOADING
 # ==========================================
-@st.cache_data(ttl=600)
 def get_pending_leads(ae_username):
-    """Fetches this AE's unprocessed leads, best score first.
-    Cached so the database isn't queried on every single click."""
+    """Fetches this AE's unprocessed leads, best score first. Not cached: the
+    swipe page holds the result in a session queue (the real cache) and only
+    calls this when that queue is empty."""
     with engine.connect() as conn:
         query = (
             select(sales_leads)

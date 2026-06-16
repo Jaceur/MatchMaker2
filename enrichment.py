@@ -237,6 +237,8 @@ def enrich_one_lead(record):
         "linkedin_url": found_linkedin,
         "linkedin_raw_title": best_li_title,
         "linkedin_raw_snippet": best_li_snippet,
+        "website_score": best_score,
+        "linkedin_score": best_li_score,
         "confidence_score": combined_score,
         "status": "ready_for_swipe",
     }

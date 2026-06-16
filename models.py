@@ -34,11 +34,16 @@ sales_leads = Table(
     Column('rejection_reason', String(255)),
     Column('is_nabd', Boolean, default=False),
     Column('active_directors', String(255)),
+    Column('directors_enriched', Boolean, default=False),
     Column('linkedin_raw_title', String),
     Column('linkedin_raw_snippet', String),
     Column('status', String(50), default='sourced'),
     Column('assigned_ae_username', String(100)),
     Column('assigned_date', DateTime),
+    # Per-source scraper scores (0-100) kept distinct from the combined
+    # confidence_score, so the ML log can use three independent signals.
+    Column('website_score', Integer),
+    Column('linkedin_score', Integer),
     Column('confidence_score', Integer, default=0),
     Column('created_at', DateTime, default=datetime.utcnow),
     Column('updated_at', DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -118,15 +123,37 @@ pipeline_archive = Table(
     Column('rejection_reason', String(255)),
     Column('is_nabd', Boolean),
     Column('active_directors', String(255)),
+    Column('directors_enriched', Boolean),
     Column('linkedin_raw_title', String),
     Column('linkedin_raw_snippet', String),
     Column('status', String(50)),
     Column('assigned_ae_username', String(100)),
     Column('assigned_date', DateTime),
+    Column('website_score', Integer),
+    Column('linkedin_score', Integer),
     Column('confidence_score', Integer),
     Column('created_at', DateTime),
     Column('updated_at', DateTime),
     Column('archived_at', DateTime, default=datetime.utcnow),
+)
+
+# ==========================================
+# DIRECTOR EMAIL CANDIDATES
+# ==========================================
+# One row per (director × email-format guess) with the AE's X/Y verdict, for
+# later analysis of which patterns are right. Links back to a lead via
+# lead_id / crn.
+director_emails = Table(
+    'director_emails', metadata,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('lead_id', Integer),
+    Column('crn', String),
+    Column('director_name', String),
+    Column('pattern', String),       # e.g. 'first.last'
+    Column('email', String),
+    Column('selected', Boolean),     # the X/Y choice: True = Y (looks right)
+    Column('swiped_by', String),
+    Column('created_at', DateTime, default=datetime.utcnow),
 )
 
 # Every table is now declared — build them all in one shot. Safe to run on each

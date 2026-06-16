@@ -7,13 +7,27 @@ modules they import.
 import streamlit as st
 
 from database import engine
-from auth import login_page
+from auth import login_page, migrate_plaintext_passwords
 import swipe_page
 import ae_dashboard
 import admin_panel
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Matchmaker 2.0 | Lead Triage", layout="centered")
+
+
+# Purge any cleartext passwords once per process (cache_resource = runs on first
+# boot only). Wrapped so a migration hiccup can never block the login screen.
+@st.cache_resource
+def _secure_passwords_once():
+    try:
+        return migrate_plaintext_passwords()
+    except Exception as e:
+        print(f"Password migration skipped: {e}")
+        return 0
+
+
+_secure_passwords_once()
 
 # --- SESSION STATE INITIALIZATION ---
 if 'logged_in' not in st.session_state:

@@ -7,6 +7,71 @@ from enrichment import run_enrichment_pipeline
 from leads import clear_all_data, clear_pipeline_data, assign_leads_to_ae
 
 
+# ==========================================
+# CACHED METRICS READS
+# ==========================================
+# These power the dashboard's read-only panels. Cached so the page doesn't
+# re-query the DB on every button click / rerun; the pipeline actions below call
+# _clear_admin_caches() so the numbers refresh immediately after a mutation.
+@st.cache_data(ttl=120)
+def _get_user_list(_engine):
+    with _engine.connect() as conn:
+        df = pd.read_sql("SELECT username FROM users", conn)
+    return df['username'].tolist() if not df.empty else ["No AEs found"]
+
+
+@st.cache_data(ttl=120)
+def _get_pipeline_stats(_engine):
+    with _engine.connect() as conn:
+        unassigned = conn.execute(text(
+            "SELECT COUNT(*) FROM sales_leads "
+            "WHERE status = 'ready_for_swipe' AND assigned_ae_username IS NULL"
+        )).scalar()
+        total = conn.execute(text("SELECT COUNT(*) FROM sales_leads")).scalar()
+        enriched = conn.execute(text(
+            "SELECT COUNT(*) FROM sales_leads WHERE status != 'sourced'"
+        )).scalar()
+    return {"unassigned": unassigned, "total": total, "enriched": enriched}
+
+
+@st.cache_data(ttl=120)
+def _get_ae_performance(_engine):
+    query = text("""
+        SELECT
+            u.username AS "AE Name",
+            COUNT(s.id) AS "Total Assigned",
+            SUM(CASE WHEN s.status IN ('approved', 'archived') THEN 1 ELSE 0 END) AS "Processed",
+            SUM(CASE WHEN s.status = 'ready_for_swipe' THEN 1 ELSE 0 END) AS "Pending"
+        FROM users u
+        LEFT JOIN sales_leads s ON u.username = s.assigned_ae_username
+        GROUP BY u.username
+    """)
+    with _engine.connect() as conn:
+        df = pd.read_sql(query, conn)
+    return df.fillna(0).astype({'Total Assigned': 'int', 'Processed': 'int', 'Pending': 'int'})
+
+
+@st.cache_data(ttl=120)
+def _get_leads_preview(_engine):
+    query = text("""
+        SELECT company_name AS "Company", status AS "Status",
+               assigned_ae_username AS "Assigned To"
+        FROM sales_leads
+        ORDER BY created_at DESC
+        LIMIT 100
+    """)
+    with _engine.connect() as conn:
+        return pd.read_sql(query, conn)
+
+
+def _clear_admin_caches():
+    """Invalidate every dashboard read after a mutating action."""
+    _get_user_list.clear()
+    _get_pipeline_stats.clear()
+    _get_ae_performance.clear()
+    _get_leads_preview.clear()
+
+
 @st.fragment
 def _allocation_controls(user_list, unassigned_count):
     """Lead-assignment controls. Changing the AE or the lead count reruns only
@@ -25,6 +90,7 @@ def _allocation_controls(user_list, unassigned_count):
                 st.error("No unassigned leads available in the pool!")
             else:
                 assigned = assign_leads_to_ae(selected_ae, num_leads)
+                _clear_admin_caches()
                 st.success(f"Successfully assigned {assigned} leads to {selected_ae}!")
                 st.rerun(scope="app")  # Refresh the page to update the metrics
 
@@ -42,6 +108,7 @@ def render_dashboard(engine):
         if st.button("📡 Run Sourcing API", use_container_width=True):
             with st.spinner("Querying Companies House..."):
                 run_sourcing_pipeline()
+            _clear_admin_caches()
             st.success("New leads sourced!")
 
     with col2:
@@ -56,6 +123,7 @@ def render_dashboard(engine):
 
             summary = run_enrichment_pipeline(progress_callback=_on_progress)
             progress_bar.empty()
+            _clear_admin_caches()
             st.success(summary)
 
     with col3:
@@ -63,6 +131,7 @@ def render_dashboard(engine):
                      help="Clears the sourcing/working pool. Approved pipeline leads are preserved."):
             with st.spinner("Clearing working pool..."):
                 summary = clear_all_data()
+            _clear_admin_caches()
             st.warning(summary)
 
     # --- CLEAR PIPELINE (destructive — two-step confirmation) ---
@@ -75,6 +144,7 @@ def render_dashboard(engine):
         if confirm.button("Yes, clear the pipeline", type="primary", use_container_width=True):
             with st.spinner("Archiving + clearing pipeline..."):
                 summary = clear_pipeline_data()
+            _clear_admin_caches()
             st.session_state.confirm_clear_pipeline = False
             st.success(summary)
         if cancel.button("Cancel", use_container_width=True):
@@ -90,32 +160,22 @@ def render_dashboard(engine):
 
     # --- SECTION 1.5: MANUAL LEAD ALLOCATION ---
     st.markdown("### 🎯 Manual Lead Allocation")
-    
-    with engine.connect() as conn:
-        # Fetch a list of all users to populate the dropdown
-        users_df = pd.read_sql("SELECT username FROM users", conn)
-        user_list = users_df['username'].tolist() if not users_df.empty else ["No AEs found"]
-        
-        # Count how many leads are waiting in the pool
-        unassigned_count = conn.execute(text("SELECT COUNT(*) FROM sales_leads WHERE status = 'ready_for_swipe' AND assigned_ae_username IS NULL")).scalar()
 
-    st.caption(f"Unassigned leads ready for distribution: **{unassigned_count}**")
+    user_list = _get_user_list(engine)
+    stats = _get_pipeline_stats(engine)
 
-    _allocation_controls(user_list, unassigned_count)
+    st.caption(f"Unassigned leads ready for distribution: **{stats['unassigned']}**")
+
+    _allocation_controls(user_list, stats['unassigned'])
 
     st.divider()
 
     # --- SECTION 2: LIVE METRICS ---
     st.markdown("### 📊 Pipeline Health")
-    
-    with engine.connect() as conn:
-        total_leads = conn.execute(text("SELECT COUNT(*) FROM sales_leads")).scalar()
-        enriched_leads = conn.execute(text("SELECT COUNT(*) FROM sales_leads WHERE status != 'sourced'")).scalar()
-        
-    if total_leads > 0:
-        enriched_pct = round((enriched_leads / total_leads) * 100, 1)
-    else:
-        enriched_pct = 0.0
+
+    total_leads = stats['total']
+    enriched_leads = stats['enriched']
+    enriched_pct = round((enriched_leads / total_leads) * 100, 1) if total_leads > 0 else 0.0
 
     kpi1, kpi2, kpi3 = st.columns(3)
     kpi1.metric(label="Total Leads in System", value=total_leads)
@@ -129,27 +189,8 @@ def render_dashboard(engine):
 
     with col_team:
         st.markdown("### 🧑‍💻 AE Performance")
-        user_stats_query = text("""
-            SELECT 
-                u.username AS "AE Name",
-                COUNT(s.id) AS "Total Assigned",
-                SUM(CASE WHEN s.status IN ('approved', 'archived') THEN 1 ELSE 0 END) AS "Processed",
-                SUM(CASE WHEN s.status = 'ready_for_swipe' THEN 1 ELSE 0 END) AS "Pending"
-            FROM users u
-            LEFT JOIN sales_leads s ON u.username = s.assigned_ae
-            GROUP BY u.username
-        """)
-        user_stats_df = pd.read_sql(user_stats_query, engine)
-        user_stats_df = user_stats_df.fillna(0).astype({'Total Assigned': 'int', 'Processed': 'int', 'Pending': 'int'})
-        st.dataframe(user_stats_df, hide_index=True, use_container_width=True)
+        st.dataframe(_get_ae_performance(engine), hide_index=True, use_container_width=True)
 
     with col_data:
         st.markdown("### 🏢 Latest Leads Preview")
-        leads_preview_query = text("""
-            SELECT company_name AS "Company", status AS "Status", assigned_ae AS "Assigned To" 
-            FROM sales_leads 
-            ORDER BY created_at DESC 
-            LIMIT 100
-        """)
-        leads_preview_df = pd.read_sql(leads_preview_query, engine)
-        st.dataframe(leads_preview_df, hide_index=True, use_container_width=True)
+        st.dataframe(_get_leads_preview(engine), hide_index=True, use_container_width=True)

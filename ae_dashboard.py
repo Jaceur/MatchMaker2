@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
-from sqlalchemy import text, update
+from sqlalchemy import text, update, insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from models import sales_leads, ml_pipeline_analytics
-from leads import engineer_ml_features
+from models import sales_leads, ml_pipeline_analytics, director_emails
+from leads import build_ml_row
+from directors import enrich_lead_directors, email_candidates, domain_from_url
 
 CRM_STATUS_OPTIONS = ["Net New", "Existing Lead", "Existing Account", "NAB", "Disqualified"]
 
@@ -18,8 +19,8 @@ def get_unclassified_leads(_engine, username: str):
     These come straight off the swipe page's 'Approve' action."""
     query = text("""
         SELECT id, crn, company_name, incorporation_date, active_directors,
-               confidence_score, website_url, linkedin_url,
-               website_accurate, linkedin_accurate,
+               directors_enriched, confidence_score, website_score, linkedin_score,
+               website_url, linkedin_url, website_accurate, linkedin_accurate,
                corrected_website_url, corrected_linkedin_url
         FROM sales_leads sl
         WHERE assigned_ae_username = :username
@@ -43,6 +44,7 @@ def get_classified_leads(_engine, username: str) -> pd.DataFrame:
             COALESCE(sl.corrected_website_url, sl.website_url)   AS "Website",
             COALESCE(sl.corrected_linkedin_url, sl.linkedin_url) AS "LinkedIn",
             m.crm_status         AS "CRM Status",
+            sl.active_directors  AS "Directors",
             sl.is_nabd           AS "NAB'd",
             DATE(sl.updated_at)  AS "Date Approved"
         FROM sales_leads sl
@@ -55,33 +57,64 @@ def get_classified_leads(_engine, username: str) -> pd.DataFrame:
         return pd.read_sql(query, conn, params={"username": username})
 
 
-def classify_lead(engine, lead: dict, crm_status: str, username: str):
-    """Commit an AE's CRM-status decision: write the ML training row and
-    flag NAB on the live lead. This is the deferred half of 'Approve'."""
-    score = lead.get('confidence_score') or 0
-    age_months, dir_count = engineer_ml_features(lead)
-
+def classify_lead(engine, lead: dict, crm_status: str, username: str, email_rows=None):
+    """Commit an AE's CRM-status decision: write the ML training row, flag NAB on
+    the live lead, and log the director email-format verdicts. The deferred half
+    of 'Approve' — all in one transaction."""
     with engine.begin() as conn:
         # 1. Log ML Data (dwell isn't captured here — it's a swipe-screen metric)
         conn.execute(
-            pg_insert(ml_pipeline_analytics).values(
-                lead_id=lead['id'], crn=lead['crn'],
-                company_age_months=age_months, director_count=dir_count,
-                website_score=score, linkedin_score=score, overall_score=score,
+            pg_insert(ml_pipeline_analytics).values(**build_ml_row(
+                lead, username,
                 website_valid=lead['website_accurate'], linkedin_valid=lead['linkedin_accurate'],
                 corrected_website_url=lead['corrected_website_url'],
                 corrected_linkedin_url=lead['corrected_linkedin_url'],
                 is_worth_it=True, crm_status=crm_status,
-                dwell_time_seconds=None, swiped_by=username
-            )
+                dwell_time_seconds=None,
+            ))
         )
         # 2. Reflect NAB on the live pipeline row
         conn.execute(
             update(sales_leads).where(sales_leads.c.id == lead['id'])
             .values(is_nabd=(crm_status == 'NAB'))
         )
+        # 3. Log every director email candidate with its X/Y verdict
+        if email_rows:
+            conn.execute(insert(director_emails), email_rows)
     get_unclassified_leads.clear()
     get_classified_leads.clear()
+
+
+@st.fragment
+def _pipeline_gate_card(lead: dict):
+    """An approved lead waiting to enter the pipeline. Director enrichment (the
+    slow Companies House call) is deferred until the AE clicks Yes — only then is
+    the lead pulled into the classify list."""
+    with st.container(border=True):
+        st.markdown(f"**🏢 {lead['company_name']}**  ·  Match {lead.get('confidence_score') or 0}%")
+        st.caption("Ready to add to pipeline?")
+        if st.button("✅ Yes, add to pipeline", key=f"add_{lead['id']}",
+                     type="primary", use_container_width=True):
+            with st.spinner("Fetching directors from Companies House..."):
+                enrich_lead_directors(lead['id'], lead['crn'])
+            get_unclassified_leads.clear()
+            st.rerun(scope="app")
+
+
+def _gather_email_rows(lead, directors, domain, username):
+    """Read each email checkbox back out of session_state into rows for the
+    director_emails table — one per (director × pattern), with its X/Y verdict."""
+    rows = []
+    for i, director in enumerate(directors):
+        for pattern, email in email_candidates(director, domain):
+            key = f"email_{lead['id']}_{i}_{pattern}"
+            rows.append({
+                "lead_id": lead['id'], "crn": lead['crn'],
+                "director_name": director, "pattern": pattern, "email": email,
+                "selected": bool(st.session_state.get(key, False)),
+                "swiped_by": username,
+            })
+    return rows
 
 
 @st.fragment
@@ -105,13 +138,28 @@ def _classify_card(engine, lead: dict, username: str):
         if links:
             st.markdown("  ·  ".join(links))
 
+        # Directors + suggested emails. Each email gets an X/Y tick (default X =
+        # unticked); the verdicts are logged for later analysis on Save.
+        domain = domain_from_url(lead.get('corrected_website_url') or lead.get('website_url'))
+        directors = [d.strip() for d in (lead.get('active_directors') or "").split(",") if d.strip()]
+        if directors:
+            st.markdown("**👤 Directors & suggested emails** _(tick = Y, looks right)_")
+            for i, director in enumerate(directors):
+                st.markdown(f"• **{director}**")
+                cands = email_candidates(director, domain)
+                if not cands:
+                    st.caption("No website domain — can't suggest emails.")
+                for pattern, email in cands:
+                    st.checkbox(email, key=f"email_{lead['id']}_{i}_{pattern}", value=False)
+
         col_sel, col_btn = st.columns([3, 1])
         crm_status = col_sel.selectbox(
             "CRM status", CRM_STATUS_OPTIONS,
             key=f"crm_{lead['id']}", label_visibility="collapsed"
         )
         if col_btn.button("Save", key=f"save_{lead['id']}", type="primary", use_container_width=True):
-            classify_lead(engine, lead, crm_status, username)
+            email_rows = _gather_email_rows(lead, directors, domain, username)
+            classify_lead(engine, lead, crm_status, username, email_rows)
             st.rerun(scope="app")
 
 
@@ -123,11 +171,14 @@ def render_ae_pipeline(engine, current_username: str):
     # --- STEP 1: CLASSIFY NEWLY APPROVED LEADS ---
     pending = get_unclassified_leads(engine, current_username)
     if pending:
-        st.subheader(f"📥 Needs CRM Status ({len(pending)})")
-        st.caption("Classify each approved lead — this is what writes its ML training row.")
+        st.subheader(f"📥 New Approved Leads ({len(pending)})")
+        st.caption("Add each lead to your pipeline (enriches directors), then set its CRM status.")
 
         for lead in pending:
-            _classify_card(engine, lead, current_username)
+            if lead.get('directors_enriched'):
+                _classify_card(engine, lead, current_username)
+            else:
+                _pipeline_gate_card(lead)
 
         st.divider()
 

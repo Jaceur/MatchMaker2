@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
 from models import sales_leads, ml_pipeline_analytics
-from leads import get_pending_leads, engineer_ml_features
+from leads import get_pending_leads, build_ml_row
 
 
 @st.fragment
@@ -102,7 +102,6 @@ def _refill_lead_queue():
     """Pull this AE's pending leads into a session-held queue. Advancing to the
     next lead then just pops the queue locally — no DB round-trip per swipe, so
     the next lead appears instantly. We only re-query when the queue runs dry."""
-    get_pending_leads.clear()
     st.session_state.lead_queue = list(get_pending_leads(st.session_state.username))
 
 
@@ -119,11 +118,9 @@ def pass_control(current_lead):
             st.warning("Pick a reason before passing.")
             return
 
-        score = current_lead.get('confidence_score') or 0
         web_valid = _validity("web_val", current_lead['id'])
         li_valid = _validity("li_val", current_lead['id'])
         dwell_time = int(time.time() - st.session_state.start_time)
-        age_months, dir_count = engineer_ml_features(current_lead)
 
         with engine.begin() as conn:
             # 1. Update live pipeline
@@ -137,20 +134,17 @@ def pass_control(current_lead):
             )
             # 2. Log ML Data
             conn.execute(
-                pg_insert(ml_pipeline_analytics).values(
-                    lead_id=current_lead['id'], crn=current_lead['crn'],
-                    company_age_months=age_months, director_count=dir_count,
-                    website_score=score, linkedin_score=score, overall_score=score,
+                pg_insert(ml_pipeline_analytics).values(**build_ml_row(
+                    current_lead, st.session_state.username,
                     website_valid=web_valid, linkedin_valid=li_valid,
                     corrected_website_url=_corrected("web_val", current_lead['id']) or current_lead.get('corrected_website_url'),
                     corrected_linkedin_url=_corrected("li_val", current_lead['id']) or current_lead.get('corrected_linkedin_url'),
                     is_worth_it=False, rejection_reason=rejection_reason,
-                    dwell_time_seconds=dwell_time, swiped_by=st.session_state.username
-                )
+                    dwell_time_seconds=dwell_time,
+                ))
             )
         # Advance locally — instant, no DB re-query — then refresh the whole page.
         st.session_state.lead_queue.pop(0)
-        get_pending_leads.clear()
         st.rerun(scope="app")
 
 
@@ -161,9 +155,7 @@ def main_app():
 
     # Load once on entry, and top up from the DB only when we've worked through
     # the local queue.
-    if 'lead_queue' not in st.session_state:
-        _refill_lead_queue()
-    if not st.session_state.lead_queue:
+    if 'lead_queue' not in st.session_state or not st.session_state.lead_queue:
         _refill_lead_queue()
 
     if not st.session_state.lead_queue:
@@ -244,7 +236,6 @@ def main_app():
                     )
                 # Advance locally — instant, no DB re-query.
                 st.session_state.lead_queue.pop(0)
-                get_pending_leads.clear()
                 st.rerun()
 
     st.caption(
