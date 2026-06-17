@@ -1,6 +1,6 @@
 """Enrichment: scrape + score each sourced lead's website and LinkedIn."""
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import requests
 from ddgs import DDGS
@@ -30,6 +30,11 @@ FOREIGN_SLUG_PENALTY = 30
 # too many wrong sites slip through.
 WEBSITE_MIN_SCORE = 50
 
+# A site that shows the exact registered legal name (incl. LTD/LIMITED) — in its
+# footer or privacy/terms page — is almost certainly the real one. This bonus
+# alone is enough to clear WEBSITE_MIN_SCORE.
+LEGAL_NAME_BONUS = 50
+
 # Sites we never want to mistake for a company's own website.
 # Defined once here, instead of being rebuilt for every single lead.
 BLOCKED_DOMAINS = [
@@ -41,7 +46,37 @@ BLOCKED_DOMAINS = [
 ]
 
 
-def score_website_match(url, company_name_clean):
+def _normalise_for_match(text):
+    """Lowercase, unify Limited/Ltd, and drop punctuation so 'Acme Widgets, Ltd.'
+    and 'ACME WIDGETS LIMITED' compare equal."""
+    text = text.lower().replace("limited", "ltd")
+    text = re.sub(r"[^a-z0-9 ]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _legal_page_url(soup, base_url):
+    """First privacy / terms / legal link on the page (as an absolute URL), or None."""
+    for a in soup.find_all('a', href=True):
+        label = a.get_text(strip=True).lower()
+        href = a['href'].lower()
+        if any(kw in label or kw in href for kw in ('privacy', 'terms', 'legal', 'imprint')):
+            return urljoin(base_url, a['href'])
+    return None
+
+
+def _fetch_text(url):
+    """Visible text of a page, or '' on any error (cert/timeout/non-200)."""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        resp = requests.get(url, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            return BeautifulSoup(resp.text, 'html.parser').get_text(separator=' ', strip=True)
+    except Exception:
+        pass
+    return ""
+
+
+def score_website_match(url, company_name_clean, company_name_strict=None):
     score = 0
     clean_name_lower = company_name_clean.lower()
     first_word = clean_name_lower.split()[0] if clean_name_lower else ""
@@ -51,6 +86,9 @@ def score_website_match(url, company_name_clean):
         score += 30
     elif first_word and first_word in domain:
         score += 15
+
+    # The full registered name (incl. LTD/LIMITED), normalised for matching.
+    strict_needle = _normalise_for_match(company_name_strict) if company_name_strict else ""
 
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -64,14 +102,25 @@ def score_website_match(url, company_name_clean):
             title = soup.title.string.lower() if soup.title and soup.title.string else ""
             meta_desc = soup.find('meta', attrs={'name': 'description'})
             meta_content = meta_desc['content'].lower() if meta_desc and 'content' in meta_desc.attrs else ""
-            body_text = soup.get_text(separator=' ', strip=True).lower()[:5000]
+            full_text = soup.get_text(separator=' ', strip=True).lower()
 
             if clean_name_lower in title: score += 40
             if clean_name_lower in meta_content: score += 20
-            if clean_name_lower in body_text: score += 20
+            if clean_name_lower in full_text[:5000]: score += 20
 
             if any(bad in title for bad in ['directory', 'company profile', 'job', 'overview', 'wiki']):
                 score -= 50
+
+            # Strong signal: the exact legal name appears on the site. It usually
+            # lives in the footer or the privacy/terms page rather than the body
+            # copy, so scan the WHOLE page, then fall back to the legal page.
+            if strict_needle:
+                if strict_needle in _normalise_for_match(full_text):
+                    score += LEGAL_NAME_BONUS
+                else:
+                    legal_url = _legal_page_url(soup, url)
+                    if legal_url and strict_needle in _normalise_for_match(_fetch_text(legal_url)):
+                        score += LEGAL_NAME_BONUS
     except Exception:
         pass
 
@@ -177,7 +226,7 @@ def enrich_one_lead(record):
                     raw_link = result.get('href', '').lower()
                     if any(blocked in raw_link for blocked in BLOCKED_DOMAINS):
                         continue
-                    confidence = score_website_match(raw_link, company_name_clean)
+                    confidence = score_website_match(raw_link, company_name_clean, company_name_strict)
                     if confidence > best_score:
                         best_score, best_url = confidence, raw_link
                 if best_score >= WEBSITE_MIN_SCORE:
