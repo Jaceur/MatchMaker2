@@ -13,6 +13,15 @@ POINTS_PER_SWIPE_BLOCK = 100  # awarded per full block of swipes
 SWIPES_PER_BLOCK = 20
 
 
+def compute_points(urls_added, leads_swiped, leads_saved):
+    """Points from raw activity counts. Works on scalars or pandas Series."""
+    return (
+        urls_added * POINTS_PER_URL
+        + leads_saved * POINTS_PER_SAVE
+        + (leads_swiped // SWIPES_PER_BLOCK) * POINTS_PER_SWIPE_BLOCK
+    )
+
+
 @st.cache_data(ttl=60)
 def _get_leaderboard(_engine):
     """All AEs (admins excluded) with their raw activity counts; 0 if no activity."""
@@ -44,11 +53,7 @@ def render_leaderboard(engine):
             st.rerun()
         return
 
-    df["Points"] = (
-        df["urls_added"] * POINTS_PER_URL
-        + df["leads_saved"] * POINTS_PER_SAVE
-        + (df["leads_swiped"] // SWIPES_PER_BLOCK) * POINTS_PER_SWIPE_BLOCK
-    )
+    df["Points"] = compute_points(df["urls_added"], df["leads_swiped"], df["leads_saved"])
     df = df.sort_values("Points", ascending=False).reset_index(drop=True)
     df.insert(0, "Rank", df.index + 1)
 

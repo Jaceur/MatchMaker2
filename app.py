@@ -16,6 +16,7 @@ from auth import (
 )
 import swipe_page
 import ae_dashboard
+import ae_home
 import admin_panel
 import leaderboard
 
@@ -69,7 +70,7 @@ else:
             f"({st.session_state.role.title()})"
         )
 
-        nav_options = ["Swipe Leads", "My Pipeline", "Leaderboard"]
+        nav_options = ["Swipe Leads", "My Pipeline", "AE Dashboard", "Leaderboard"]
         if st.session_state.role == 'admin':
             nav_options.append("Admin Dashboard")
         page_selection = st.radio("Navigation", nav_options)
@@ -85,6 +86,8 @@ else:
         swipe_page.main_app()
     elif page_selection == "My Pipeline":
         ae_dashboard.render_ae_pipeline(engine, st.session_state.username)
+    elif page_selection == "AE Dashboard":
+        ae_home.render_ae_dashboard(engine, st.session_state.username)
     elif page_selection == "Leaderboard":
         leaderboard.render_leaderboard(engine)
     elif page_selection == "Admin Dashboard":

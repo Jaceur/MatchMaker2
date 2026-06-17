@@ -51,6 +51,26 @@ def upgrade_password_to_hash(user_id: int, plain_password: str):
         )
 
 
+def change_password(username, current_password, new_password):
+    """Verify the user's current password (entered as plaintext, checked against
+    the stored hash) and, if it matches, store a new bcrypt hash. Returns
+    (ok, message)."""
+    if not new_password:
+        return False, "New password can't be blank."
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(users_table).where(users_table.c.username == username)
+        ).fetchone()
+    if not row or not verify_password(row.password, current_password):
+        return False, "Current password is incorrect."
+    hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    with engine.begin() as conn:
+        conn.execute(
+            update(users_table).where(users_table.c.id == row.id).values(password=hashed)
+        )
+    return True, "Password updated."
+
+
 def migrate_plaintext_passwords():
     """Bcrypt-hash any password still stored as plain text, in place. Idempotent
     and non-disruptive. Run once at startup so no cleartext lingers at rest.
