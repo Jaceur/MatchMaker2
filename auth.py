@@ -1,8 +1,18 @@
-"""Authentication: password checking, transparent hash upgrades, login page."""
+"""Authentication: password checking, hash upgrades, login, and a cookie-backed
+session so a refresh (or returning within the idle window) keeps you logged in.
+
+The cookie holds a short signed token (HMAC over username/role/expiry). It's a
+*session* cookie — gone when the browser closes (best-effort; some browsers keep
+session cookies across restarts) — and carries a 10-minute sliding expiry that
+is the reliable backstop.
+"""
 import time
+import json
+import hmac
+import hashlib
+import base64
 
 import bcrypt  # pip install bcrypt — add to requirements.txt
-import hmac
 
 import streamlit as st
 from sqlalchemy import select, update
@@ -10,10 +20,15 @@ from sqlalchemy import select, update
 from database import engine
 from models import users_table
 
-MAX_LOGIN_ATTEMPTS = 5      # failed tries before a temporary lockout
-LOCKOUT_SECONDS = 60        # how long the lockout lasts
+MAX_LOGIN_ATTEMPTS = 5          # failed tries before a temporary lockout
+LOCKOUT_SECONDS = 60            # how long the lockout lasts
+SESSION_TTL_SECONDS = 600       # sliding 10-minute idle window
+COOKIE_NAME = "mm_auth"
 
 
+# ==========================================
+# PASSWORDS
+# ==========================================
 def verify_password(stored: str, supplied: str) -> bool:
     """Checks a password. Understands both scrambled (bcrypt) passwords
     and old plain-text ones, so nobody is locked out during the changeover."""
@@ -26,8 +41,7 @@ def verify_password(stored: str, supplied: str) -> bool:
 
 def upgrade_password_to_hash(user_id: int, plain_password: str):
     """Quietly converts an old plain-text password to a scrambled one
-    the first time that user logs in successfully. This means the whole
-    team migrates to secure passwords automatically — no script needed."""
+    the first time that user logs in successfully."""
     hashed = bcrypt.hashpw(plain_password.encode(), bcrypt.gensalt()).decode()
     with engine.begin() as conn:
         conn.execute(
@@ -39,9 +53,8 @@ def upgrade_password_to_hash(user_id: int, plain_password: str):
 
 def migrate_plaintext_passwords():
     """Bcrypt-hash any password still stored as plain text, in place. Idempotent
-    (rows already starting with '$2' are skipped) and non-disruptive — each
-    user's existing password keeps working. Run once at startup so no cleartext
-    lingers at rest waiting for that user to next log in. Returns count migrated."""
+    and non-disruptive. Run once at startup so no cleartext lingers at rest.
+    Returns count migrated."""
     migrated = 0
     with engine.begin() as conn:
         rows = conn.execute(
@@ -60,7 +73,91 @@ def migrate_plaintext_passwords():
     return migrated
 
 
-def login_page():
+# ==========================================
+# SIGNED SESSION TOKEN
+# ==========================================
+def _signing_key() -> bytes:
+    # Reuse an existing secret as the HMAC key — no new secret to provision. Set
+    # a dedicated AUTH_SIGNING_KEY in secrets if you'd rather separate concerns.
+    return str(st.secrets["DB_PASSWORD"]).encode()
+
+
+def _sign_token(payload: dict) -> str:
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+    sig = hmac.new(_signing_key(), body.encode(), hashlib.sha256).hexdigest()
+    return f"{body}.{sig}"
+
+
+def _verify_token(token):
+    """Return the payload if the token is well-formed, correctly signed, and not
+    past its embedded expiry; otherwise None."""
+    if not token:
+        return None
+    try:
+        body, sig = token.split(".", 1)
+    except ValueError:
+        return None
+    expected = hmac.new(_signing_key(), body.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(body.encode()).decode())
+    except Exception:
+        return None
+    if payload.get("exp", 0) < time.time():
+        return None
+    return payload
+
+
+def issue_auth_cookie(cookie_manager, username, role):
+    """Write a fresh signed session cookie carrying a 10-minute expiry. Failures
+    are swallowed: the in-session login still works, we just lose cross-refresh
+    persistence rather than blocking the user."""
+    exp = time.time() + SESSION_TTL_SECONDS
+    token = _sign_token({"u": username, "r": role, "exp": exp})
+    try:
+        # expires_at=None -> js-cookie omits expiry -> a session cookie.
+        cookie_manager.set(COOKIE_NAME, token, expires_at=None)
+    except Exception as e:
+        print(f"Could not set auth cookie: {e}")
+    st.session_state.auth_exp = exp
+
+
+def clear_auth_cookie(cookie_manager):
+    try:
+        cookie_manager.delete(COOKIE_NAME)
+    except Exception:
+        pass
+
+
+def restore_session(cookie_manager):
+    """If a valid auth cookie exists, restore the login into session_state. Used
+    after a refresh, when server-side session_state has been wiped."""
+    try:
+        token = cookie_manager.get(COOKIE_NAME)
+    except Exception:
+        token = None
+    payload = _verify_token(token)
+    if payload:
+        st.session_state.logged_in = True
+        st.session_state.username = payload["u"]
+        st.session_state.role = payload["r"]
+        st.session_state.auth_exp = payload["exp"]
+
+
+def refresh_auth_cookie(cookie_manager):
+    """Sliding window: once the token passes its halfway point, re-issue it so an
+    actively-working AE never times out. Re-issues at most ~once per 5 minutes."""
+    exp = st.session_state.get("auth_exp", 0)
+    if exp - time.time() < SESSION_TTL_SECONDS / 2:
+        issue_auth_cookie(cookie_manager,
+                          st.session_state.username, st.session_state.role)
+
+
+# ==========================================
+# LOGIN PAGE
+# ==========================================
+def login_page(cookie_manager):
     st.title("🔒 Matchmaker Login")
 
     # Temporary lockout after too many failed attempts (per session).
@@ -81,8 +178,7 @@ def login_page():
                 user_record = conn.execute(query).fetchone()
 
             if user_record and verify_password(user_record.password, input_password):
-                # If they logged in with an old plain-text password,
-                # upgrade it to a secure scrambled one right now.
+                # Upgrade a legacy plain-text password on the way in.
                 if not user_record.password.startswith("$2"):
                     upgrade_password_to_hash(user_record.id, input_password)
 
@@ -91,6 +187,7 @@ def login_page():
                 st.session_state.logged_in = True
                 st.session_state.username = user_record.username
                 st.session_state.role = user_record.role
+                issue_auth_cookie(cookie_manager, user_record.username, user_record.role)
                 st.rerun()
             else:
                 attempts = st.session_state.get('login_attempts', 0) + 1

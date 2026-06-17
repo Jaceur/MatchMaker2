@@ -156,6 +156,19 @@ director_emails = Table(
     Column('created_at', DateTime, default=datetime.utcnow),
 )
 
+# ==========================================
+# AE ACTIVITY / POINTS
+# ==========================================
+# Running per-AE counters that drive the leaderboard. Points are derived from
+# these on the leaderboard page (urls*25 + saves*50 + (swipes // 20)*100).
+ae_stats = Table(
+    'ae_stats', metadata,
+    Column('username', String, primary_key=True),
+    Column('urls_added', Integer, default=0),
+    Column('leads_swiped', Integer, default=0),
+    Column('leads_saved', Integer, default=0),
+)
+
 # Every table is now declared — build them all in one shot. Safe to run on each
 # boot: it only creates tables that don't already exist.
 metadata.create_all(engine)

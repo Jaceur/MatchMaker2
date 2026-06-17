@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
 from models import sales_leads, ml_pipeline_analytics
-from leads import get_pending_leads, build_ml_row
+from leads import get_pending_leads, build_ml_row, award_activity
 
 
 @st.fragment
@@ -121,6 +121,7 @@ def pass_control(current_lead):
         web_valid = _validity("web_val", current_lead['id'])
         li_valid = _validity("li_val", current_lead['id'])
         dwell_time = int(time.time() - st.session_state.start_time)
+        corrected = _corrected_values(current_lead['id'])
 
         with engine.begin() as conn:
             # 1. Update live pipeline
@@ -129,7 +130,7 @@ def pass_control(current_lead):
                 .values(
                     status='archived',
                     rejection_reason=rejection_reason,
-                    **_corrected_values(current_lead['id']),
+                    **corrected,
                 )
             )
             # 2. Log ML Data
@@ -143,6 +144,9 @@ def pass_control(current_lead):
                     dwell_time_seconds=dwell_time,
                 ))
             )
+            # 3. Award leaderboard points (1 swipe + any URLs the AE added)
+            award_activity(conn, st.session_state.username,
+                           urls_added=len(corrected), leads_swiped=1)
         # Advance locally — instant, no DB re-query — then refresh the whole page.
         st.session_state.lead_queue.pop(0)
         st.rerun(scope="app")
@@ -224,6 +228,7 @@ def main_app():
             # (next lead), so it stays a normal full-app button — not a fragment.
             st.markdown("&nbsp;")  # spacer to align the button with Pass
             if st.button("✅ Approve", type="primary", use_container_width=True):
+                corrected = _corrected_values(current_lead['id'])
                 with engine.begin() as conn:
                     conn.execute(
                         update(sales_leads).where(sales_leads.c.id == current_lead['id'])
@@ -231,9 +236,12 @@ def main_app():
                             status='approved',
                             website_accurate=_validity("web_val", current_lead['id']),
                             linkedin_accurate=_validity("li_val", current_lead['id']),
-                            **_corrected_values(current_lead['id']),
+                            **corrected,
                         )
                     )
+                    # Award leaderboard points (1 swipe + any URLs the AE added)
+                    award_activity(conn, st.session_state.username,
+                                   urls_added=len(corrected), leads_swiped=1)
                 # Advance locally — instant, no DB re-query.
                 st.session_state.lead_queue.pop(0)
                 st.rerun()

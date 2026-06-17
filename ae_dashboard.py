@@ -4,10 +4,10 @@ from sqlalchemy import text, update, insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from models import sales_leads, ml_pipeline_analytics, director_emails
-from leads import build_ml_row
+from leads import build_ml_row, award_activity
 from directors import enrich_lead_directors, email_candidates, domain_from_url
 
-CRM_STATUS_OPTIONS = ["Net New", "Existing Lead", "Existing Account", "NAB", "Disqualified"]
+CRM_STATUS_OPTIONS = ["Net New", "Existing Lead", "Existing Account", "Won", "Disqualified"]
 
 
 # Cached at module level so reruns (every button click, every widget interaction)
@@ -45,7 +45,7 @@ def get_classified_leads(_engine, username: str) -> pd.DataFrame:
             COALESCE(sl.corrected_linkedin_url, sl.linkedin_url) AS "LinkedIn",
             m.crm_status         AS "CRM Status",
             sl.active_directors  AS "Directors",
-            sl.is_nabd           AS "NAB'd",
+            sl.is_nabd           AS "Won",
             DATE(sl.updated_at)  AS "Date Approved"
         FROM sales_leads sl
         JOIN ml_pipeline_analytics m ON m.lead_id = sl.id
@@ -58,9 +58,9 @@ def get_classified_leads(_engine, username: str) -> pd.DataFrame:
 
 
 def classify_lead(engine, lead: dict, crm_status: str, username: str, email_rows=None):
-    """Commit an AE's CRM-status decision: write the ML training row, flag NAB on
-    the live lead, and log the director email-format verdicts. The deferred half
-    of 'Approve' — all in one transaction."""
+    """Commit an AE's CRM-status decision: write the ML training row, flag Won on
+    the live lead, log the director email-format verdicts, and award the AE's
+    leaderboard points. The deferred half of 'Approve' — all in one transaction."""
     with engine.begin() as conn:
         # 1. Log ML Data (dwell isn't captured here — it's a swipe-screen metric)
         conn.execute(
@@ -73,14 +73,16 @@ def classify_lead(engine, lead: dict, crm_status: str, username: str, email_rows
                 dwell_time_seconds=None,
             ))
         )
-        # 2. Reflect NAB on the live pipeline row
+        # 2. Reflect Won on the live pipeline row (is_nabd column now means "Won")
         conn.execute(
             update(sales_leads).where(sales_leads.c.id == lead['id'])
-            .values(is_nabd=(crm_status == 'NAB'))
+            .values(is_nabd=(crm_status == 'Won'))
         )
         # 3. Log every director email candidate with its X/Y verdict
         if email_rows:
             conn.execute(insert(director_emails), email_rows)
+        # 4. Award leaderboard points: lead saved into Salesforce
+        award_activity(conn, username, leads_saved=1)
     get_unclassified_leads.clear()
     get_classified_leads.clear()
 
@@ -211,7 +213,7 @@ def render_ae_pipeline(engine, current_username: str):
             ),
             "Website": st.column_config.LinkColumn("Website", display_text="Visit"),
             "LinkedIn": st.column_config.LinkColumn("LinkedIn", display_text="Profile"),
-            "NAB'd": st.column_config.CheckboxColumn("NAB'd", disabled=True),
+            "Won": st.column_config.CheckboxColumn("Won", disabled=True),
         },
         hide_index=True,
         use_container_width=True,

@@ -7,9 +7,10 @@ from datetime import datetime
 
 import pandas as pd
 from sqlalchemy import select, delete, insert, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
-from models import sales_leads, pipeline_archive
+from models import sales_leads, pipeline_archive, ae_stats
 
 # Enriched leads scoring AT OR BELOW this are "Tier 4" — held back from AEs until
 # the scoring model is good enough to lower the bar. Allocation and the swipe
@@ -156,3 +157,27 @@ def clear_pipeline_data():
     print("UI Triggered: Clearing pipeline...")
     moved = clear_pipeline()
     return f"Archived + cleared {moved} pipeline leads."
+
+
+# ==========================================
+# AE ACTIVITY (leaderboard points)
+# ==========================================
+def award_activity(conn, username, urls_added=0, leads_swiped=0, leads_saved=0):
+    """Increment an AE's activity counters (upsert). Takes the caller's `conn`
+    so the points commit atomically with the swipe/approve/save that earned them."""
+    if not (urls_added or leads_swiped or leads_saved):
+        return
+    stmt = pg_insert(ae_stats).values(
+        username=username,
+        urls_added=urls_added,
+        leads_swiped=leads_swiped,
+        leads_saved=leads_saved,
+    ).on_conflict_do_update(
+        index_elements=['username'],
+        set_={
+            'urls_added': ae_stats.c.urls_added + urls_added,
+            'leads_swiped': ae_stats.c.leads_swiped + leads_swiped,
+            'leads_saved': ae_stats.c.leads_saved + leads_saved,
+        },
+    )
+    conn.execute(stmt)
