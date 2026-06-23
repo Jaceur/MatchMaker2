@@ -1,8 +1,11 @@
-"""Enrichment: scrape + score each sourced lead's website and LinkedIn."""
+"""Enrichment: scrape + score each sourced lead's website and LinkedIn, plus a
+couple of Companies House signals (account category, recent director change)."""
 import re
+from datetime import datetime, timedelta
 from urllib.parse import urlparse, urljoin
 
 import requests
+import streamlit as st
 from ddgs import DDGS
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz  # pip install rapidfuzz
@@ -34,6 +37,12 @@ WEBSITE_MIN_SCORE = 50
 # footer or privacy/terms page — is almost certainly the real one. This bonus
 # alone is enough to clear WEBSITE_MIN_SCORE.
 LEGAL_NAME_BONUS = 50
+
+# Companies House extras pulled during enrichment.
+CH_PROFILE_URL = "https://api.company-information.service.gov.uk/company/{crn}"
+CH_FILING_URL = "https://api.company-information.service.gov.uk/company/{crn}/filing-history"
+DIRECTOR_CHANGE_FORMS = {"AP01", "TM01"}   # appoint / terminate a person director
+DIRECTOR_CHANGE_RECENT_DAYS = 183          # ~6 months
 
 # Sites we never want to mistake for a company's own website.
 # Defined once here, instead of being rebuilt for every single lead.
@@ -195,6 +204,52 @@ def score_linkedin_match(url, title, snippet, company_name_clean):
     return min(max(score, 0), 100)
 
 
+def fetch_ch_signals(crn):
+    """From Companies House: the account category (micro-entity / small / medium
+    / full…) from the company profile, and the most recent director appoint
+    (AP01) / terminate (TM01) date from filing history, with a 'recent' flag."""
+    auth = (st.secrets["CH_API_KEY"], "")
+    account_type = None
+    last_change = None
+
+    # 1. Account category from the company profile.
+    try:
+        resp = requests.get(CH_PROFILE_URL.format(crn=crn), auth=auth, timeout=15)
+        if resp.status_code == 200:
+            account_type = (resp.json().get("accounts") or {}).get("last_accounts", {}).get("type")
+    except Exception as e:
+        print(f"CH profile failed for {crn}: {e}")
+
+    # 2. Most recent director change from the officers filing history.
+    try:
+        resp = requests.get(
+            CH_FILING_URL.format(crn=crn), auth=auth,
+            params={"category": "officers", "items_per_page": 100}, timeout=15,
+        )
+        if resp.status_code == 200:
+            dates = []
+            for item in resp.json().get("items", []):
+                if item.get("type") in DIRECTOR_CHANGE_FORMS and item.get("date"):
+                    try:
+                        dates.append(datetime.strptime(item["date"], "%Y-%m-%d").date())
+                    except ValueError:
+                        pass
+            if dates:
+                last_change = max(dates)
+    except Exception as e:
+        print(f"CH filing-history failed for {crn}: {e}")
+
+    recent = bool(
+        last_change
+        and last_change >= datetime.now().date() - timedelta(days=DIRECTOR_CHANGE_RECENT_DAYS)
+    )
+    return {
+        "account_type": account_type,
+        "last_director_change": last_change,
+        "director_change_recent": recent,
+    }
+
+
 def enrich_one_lead(record):
     """Does all the slow internet work for a single company and returns
     everything we learned. No database writing happens in here."""
@@ -281,6 +336,8 @@ def enrich_one_lead(record):
     print(f" -> LinkedIn: {found_linkedin} ({li_status})")
     print(f" -> OVERALL SCORE: {combined_score}")
 
+    ch = fetch_ch_signals(record.crn)
+
     return {
         "website_url": found_domain,
         "linkedin_url": found_linkedin,
@@ -289,6 +346,9 @@ def enrich_one_lead(record):
         "website_score": best_score,
         "linkedin_score": best_li_score,
         "confidence_score": combined_score,
+        "account_type": ch["account_type"],
+        "last_director_change": ch["last_director_change"],
+        "director_change_recent": ch["director_change_recent"],
         "status": "ready_for_swipe",
     }
 

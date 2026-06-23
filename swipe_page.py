@@ -179,7 +179,13 @@ def main_app():
 
     with st.container(border=True):
         st.subheader(f"🏢 {current_lead['company_name']}")
-        st.caption(f"Status: Active | Incorporated: {current_lead['incorporation_date']}")
+        accounts = current_lead.get('account_type') or "—"
+        st.caption(
+            f"Status: Active | Incorporated: {current_lead['incorporation_date']} "
+            f"| Accounts: {accounts}"
+        )
+        if current_lead.get('director_change_recent'):
+            st.warning(f"🔄 Recent director change ({current_lead.get('last_director_change')})")
 
         score = current_lead.get('confidence_score') or 0
         st.progress(score / 100, text=f"Data Confidence Score: {score}%")

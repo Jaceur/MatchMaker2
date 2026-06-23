@@ -35,6 +35,10 @@ sales_leads = Table(
     Column('is_nabd', Boolean, default=False),
     Column('active_directors', String(255)),
     Column('directors_enriched', Boolean, default=False),
+    # Companies House extras pulled during enrichment.
+    Column('account_type', String(50)),               # micro-entity / small / medium / full…
+    Column('last_director_change', Date),             # most recent AP01/TM01 filing date
+    Column('director_change_recent', Boolean),        # within the last ~6 months
     Column('linkedin_raw_title', String),
     Column('linkedin_raw_snippet', String),
     Column('status', String(50), default='sourced'),
@@ -124,6 +128,9 @@ pipeline_archive = Table(
     Column('is_nabd', Boolean),
     Column('active_directors', String(255)),
     Column('directors_enriched', Boolean),
+    Column('account_type', String(50)),
+    Column('last_director_change', Date),
+    Column('director_change_recent', Boolean),
     Column('linkedin_raw_title', String),
     Column('linkedin_raw_snippet', String),
     Column('status', String(50)),
