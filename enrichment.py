@@ -13,6 +13,7 @@ from sqlalchemy import select, update
 
 from database import engine
 from models import sales_leads
+from scoring import score_lead
 
 # Legal/structural words that add no identifying signal when matching a company
 # name against a LinkedIn slug.
@@ -43,6 +44,10 @@ CH_PROFILE_URL = "https://api.company-information.service.gov.uk/company/{crn}"
 CH_FILING_URL = "https://api.company-information.service.gov.uk/company/{crn}/filing-history"
 DIRECTOR_CHANGE_FORMS = {"AP01", "TM01"}   # appoint / terminate a person director
 DIRECTOR_CHANGE_RECENT_DAYS = 183          # ~6 months
+
+# HMRC UK Trade Info (no API key) — does the company appear as an importer /
+# exporter? Direction is structural: separate Imports / Exports navigation sets.
+UKTRADE_TRADER_URL = "https://api.uktradeinfo.com/Trader"
 
 # Sites we never want to mistake for a company's own website.
 # Defined once here, instead of being rebuilt for every single lead.
@@ -250,6 +255,63 @@ def fetch_ch_signals(crn):
     }
 
 
+def fetch_trade_activity(company_name):
+    """Check HMRC UK Trade Info for any import/export activity under a company
+    name. Returns {'imports': bool, 'exports': bool}.
+
+    HMRC trader names are UPPERCASE. We query with an OData contains() on the
+    cleaned name, then keep only traders whose CompanyName matches that name on
+    word boundaries — so a short needle like 'SUN' doesn't count 'SAMSUNG' as
+    trade activity. A non-empty Imports/Exports array on a matched trader means
+    activity in that direction. (If the API returns no CompanyName we fall back
+    to trusting the contains() filter rather than dropping the row.)
+    """
+    name = (company_name or "").strip().upper()
+    if not name:
+        return {"imports": False, "exports": False}
+    escaped = name.replace("'", "''")   # OData string-literal escaping
+    try:
+        resp = requests.get(
+            UKTRADE_TRADER_URL,
+            params={
+                "$filter": f"contains(CompanyName,'{escaped}')",
+                "$expand": "Imports($top=1),Exports($top=1)",
+                "$top": 10,
+            },
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"UK Trade Info request failed for {name}: {e}")
+        return {"imports": False, "exports": False}
+
+    if resp.status_code != 200:
+        print(f"UK Trade Info error for {name}: {resp.status_code}")
+        return {"imports": False, "exports": False}
+
+    # A 200 with a non-JSON body would otherwise raise here and abort the lead.
+    try:
+        traders = resp.json().get("value", [])
+    except Exception as e:
+        print(f"UK Trade Info bad response for {name}: {e}")
+        return {"imports": False, "exports": False}
+
+    name_pattern = re.compile(rf"\b{re.escape(name)}\b")
+    imports = exports = False
+    for trader in traders:
+        cname = (trader.get("CompanyName") or "").upper()
+        # Drop OData substring false-positives (e.g. 'SUN' inside 'SAMSUNG'). If
+        # the API didn't return a name, trust the filter rather than over-reject.
+        if cname and not name_pattern.search(cname):
+            continue
+        if trader.get("Imports"):
+            imports = True
+        if trader.get("Exports"):
+            exports = True
+        if imports and exports:
+            break
+    return {"imports": imports, "exports": exports}
+
+
 def enrich_one_lead(record):
     """Does all the slow internet work for a single company and returns
     everything we learned. No database writing happens in here."""
@@ -337,6 +399,15 @@ def enrich_one_lead(record):
     print(f" -> OVERALL SCORE: {combined_score}")
 
     ch = fetch_ch_signals(record.crn)
+    trade = fetch_trade_activity(company_name_clean)
+
+    lead_score = score_lead(
+        confidence_score=combined_score,
+        account_type=ch["account_type"],
+        import_activity=trade["imports"],
+        export_activity=trade["exports"],
+        director_change_recent=ch["director_change_recent"],
+    )
 
     return {
         "website_url": found_domain,
@@ -349,6 +420,9 @@ def enrich_one_lead(record):
         "account_type": ch["account_type"],
         "last_director_change": ch["last_director_change"],
         "director_change_recent": ch["director_change_recent"],
+        "import_activity": trade["imports"],
+        "export_activity": trade["exports"],
+        "lead_score": lead_score,
         "status": "ready_for_swipe",
     }
 

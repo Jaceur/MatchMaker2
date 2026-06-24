@@ -6,7 +6,7 @@ whole schema is known.
 from datetime import datetime
 
 from sqlalchemy import (
-    Table, Column, Integer, String, Date, Boolean, DateTime,
+    Table, Column, Integer, String, Date, Boolean, DateTime, text,
 )
 
 from database import engine, metadata
@@ -39,6 +39,9 @@ sales_leads = Table(
     Column('account_type', String(50)),               # micro-entity / small / medium / full…
     Column('last_director_change', Date),             # most recent AP01/TM01 filing date
     Column('director_change_recent', Boolean),        # within the last ~6 months
+    Column('import_activity', Boolean),               # appears as an importer in HMRC UK Trade Info
+    Column('export_activity', Boolean),               # appears as an exporter in HMRC UK Trade Info
+    Column('lead_score', Integer),                    # composite 0-100 base score (scoring.py)
     Column('linkedin_raw_title', String),
     Column('linkedin_raw_snippet', String),
     Column('status', String(50), default='sourced'),
@@ -131,6 +134,9 @@ pipeline_archive = Table(
     Column('account_type', String(50)),
     Column('last_director_change', Date),
     Column('director_change_recent', Boolean),
+    Column('import_activity', Boolean),
+    Column('export_activity', Boolean),
+    Column('lead_score', Integer),
     Column('linkedin_raw_title', String),
     Column('linkedin_raw_snippet', String),
     Column('status', String(50)),
@@ -179,3 +185,24 @@ ae_stats = Table(
 # Every table is now declared — build them all in one shot. Safe to run on each
 # boot: it only creates tables that don't already exist.
 metadata.create_all(engine)
+
+# create_all only CREATEs missing tables — it never adds a column to a table
+# that already exists. These three columns were introduced after sales_leads and
+# pipeline_archive were already live, so bring existing databases up to date with
+# an idempotent ADD COLUMN IF NOT EXISTS (Postgres). Wrapped so a migration
+# hiccup can never block boot, mirroring the password migration in app.py.
+_ADDED_COLUMNS = {
+    "import_activity": "BOOLEAN",
+    "export_activity": "BOOLEAN",
+    "lead_score": "INTEGER",
+}
+try:
+    with engine.begin() as _conn:
+        for _table_name in ("sales_leads", "pipeline_archive"):
+            for _col, _col_type in _ADDED_COLUMNS.items():
+                _conn.execute(text(
+                    f"ALTER TABLE {_table_name} "
+                    f"ADD COLUMN IF NOT EXISTS {_col} {_col_type}"
+                ))
+except Exception as _e:
+    print(f"Schema migration (trade/lead_score columns) skipped: {_e}")

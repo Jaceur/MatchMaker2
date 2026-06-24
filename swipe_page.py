@@ -184,11 +184,16 @@ def main_app():
             f"Status: Active | Incorporated: {current_lead['incorporation_date']} "
             f"| Accounts: {accounts}"
         )
+        imp = "✅" if current_lead.get('import_activity') else "❌"
+        exp = "✅" if current_lead.get('export_activity') else "❌"
+        st.caption(f"Import: {imp}  ·  Export: {exp}")
         if current_lead.get('director_change_recent'):
             st.warning(f"🔄 Recent director change ({current_lead.get('last_director_change')})")
 
+        lead_score = current_lead.get('lead_score') or 0
+        st.progress(min(lead_score, 100) / 100, text=f"🎯 Lead Score: {lead_score}/100")
         score = current_lead.get('confidence_score') or 0
-        st.progress(score / 100, text=f"Data Confidence Score: {score}%")
+        st.progress(score / 100, text=f"Data Confidence: {score}%")
 
         # --- QUICK LINKS & VALIDATION ---
         st.markdown("### Source Links & Validation")
