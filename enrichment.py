@@ -39,6 +39,10 @@ WEBSITE_MIN_SCORE = 50
 # alone is enough to clear WEBSITE_MIN_SCORE.
 LEGAL_NAME_BONUS = 50
 
+# A LinkedIn link found on the company's OWN website (footer/social icons) is
+# self-declared, so we trust it highly — enough to count as a "high" match.
+SITE_LINKEDIN_SCORE = 80
+
 # Companies House extras pulled during enrichment.
 CH_PROFILE_URL = "https://api.company-information.service.gov.uk/company/{crn}"
 CH_FILING_URL = "https://api.company-information.service.gov.uk/company/{crn}/filing-history"
@@ -56,7 +60,8 @@ BLOCKED_DOMAINS = [
     'instagram.com', 'twitter.com', 'yelp.co.uk', 'yell.com', 'companycheck.co.uk',
     'sparklane-group', 'theladders.com', 'bloomberg.com', 'wikipedia.org',
     'crunchbase.com', 'pitchbook.com', 'zoominfo.com', 'dunandbradstreet',
-    'apollo.io', 'glassdoor', 'suite.endole', 'globaldatabase'
+    'apollo.io', 'glassdoor', 'suite.endole', 'globaldatabase',
+    'companiesintheuk', 'ukbizdb', 'checkcompany', 'entia.systems'
 ]
 
 
@@ -95,9 +100,18 @@ def score_website_match(url, company_name_clean, company_name_strict=None):
     clean_name_lower = company_name_clean.lower()
     first_word = clean_name_lower.split()[0] if clean_name_lower else ""
     domain = url.split('/')[2].lower() if '//' in url else url.lower()
+    domain_label = (domain[4:] if domain.startswith('www.') else domain).split('.')[0]
+    clean_no_spaces = clean_name_lower.replace(" ", "")
 
-    if clean_name_lower.replace(" ", "") in domain:
-        score += 30
+    # The registrable domain label tells us a lot on its own — enough to accept
+    # (and even rate "high") without reading the page, which often can't be read
+    # anyway (slow/blocked server, JS-only content, no name in the HTML).
+    if clean_no_spaces and domain_label == clean_no_spaces:
+        score += 70   # the domain IS the company name (cherubinmusicproductions.co.uk) -> high
+    elif clean_no_spaces and domain_label.startswith(clean_no_spaces):
+        score += 50   # domain starts with the name (e.g. nameltd.co.uk)
+    elif clean_no_spaces and clean_no_spaces in domain:
+        score += 30   # name appears somewhere in the domain
     elif first_word and first_word in domain:
         score += 15
 
@@ -297,19 +311,44 @@ def fetch_trade_activity(company_name):
 
     name_pattern = re.compile(rf"\b{re.escape(name)}\b")
     imports = exports = False
+    matched = 0
     for trader in traders:
         cname = (trader.get("CompanyName") or "").upper()
         # Drop OData substring false-positives (e.g. 'SUN' inside 'SAMSUNG'). If
         # the API didn't return a name, trust the filter rather than over-reject.
         if cname and not name_pattern.search(cname):
             continue
+        matched += 1
         if trader.get("Imports"):
             imports = True
         if trader.get("Exports"):
             exports = True
         if imports and exports:
             break
+    # Console debug (visible when running enrich_local) — is Trade Info matching?
+    print(f" -> Trade Info: '{name}' — {len(traders)} returned, {matched} matched, "
+          f"import={imports} export={exports}")
     return {"imports": imports, "exports": exports}
+
+
+def _extract_linkedin_from_site(url):
+    """Find a linkedin.com/company/ link on the company's own website (usually a
+    footer/header social icon). Returns the cleaned URL, or None."""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        resp = requests.get(url, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                if 'linkedin.com/company/' in href.lower():
+                    href = href.split('?')[0].rstrip('/')
+                    if href.startswith('//'):
+                        href = 'https:' + href
+                    return href
+    except Exception:
+        pass
+    return None
 
 
 def enrich_one_lead(record):
@@ -375,6 +414,18 @@ def enrich_one_lead(record):
                 print(f"DDG LinkedIn Search failed: {e}")
     except Exception as e:
         print(f"Could not start search session: {e}")
+
+    # --- LinkedIn fallback: the company's own website usually links it.
+    # DDG indexes /company/ pages poorly, so when we have a website, harvest the
+    # LinkedIn straight from it (self-declared = reliable) unless the search
+    # already found an equally strong match.
+    if found_domain and best_li_score < SITE_LINKEDIN_SCORE:
+        site_li = _extract_linkedin_from_site(found_domain)
+        if site_li:
+            found_linkedin = site_li
+            best_li_score = SITE_LINKEDIN_SCORE
+            best_li_title = None
+            best_li_snippet = None
 
     # --- Combine the two scores into one confidence number ---
     web_status = "high" if best_score >= 70 else "low" if best_score >= WEBSITE_MIN_SCORE else "none"
