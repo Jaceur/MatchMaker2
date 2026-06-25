@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from database import engine
 from models import sales_leads, ml_pipeline_analytics
 from leads import get_pending_leads, build_ml_row, award_activity
+from lead_card import render_profile
 
 
 @st.fragment
@@ -92,6 +93,8 @@ def _corrected_values(lead_id):
     return out
 
 
+
+
 PASS_REASONS = [
     "None Selected", "Bad Industry", "Too Small", "No Public Info",
     "Competitor", "Out of Business", "Other",
@@ -154,8 +157,7 @@ def pass_control(current_lead):
 
 def main_app():
     st.title("🔥 Matchmaker 2.0 Triage")
-    st.write("Review your assigned leads. Validate the data, add context, and submit.")
-    st.divider()
+    st.caption("Swipe through your assigned leads — check the profile, validate the sources, then Pass or Approve.")
 
     # Load once on entry, and top up from the DB only when we've worked through
     # the local queue.
@@ -177,31 +179,19 @@ def main_app():
         st.session_state.start_time = time.time()
         st.session_state.current_lead_id = current_lead['id']
 
+    # ---------- PROFILE CARD (read-only "Tinder profile") ----------
     with st.container(border=True):
-        st.subheader(f"🏢 {current_lead['company_name']}")
-        accounts = current_lead.get('account_type') or "—"
-        st.caption(
-            f"Status: Active | Incorporated: {current_lead['incorporation_date']} "
-            f"| Accounts: {accounts}"
-        )
-        imp = "✅" if current_lead.get('import_activity') else "❌"
-        exp = "✅" if current_lead.get('export_activity') else "❌"
-        st.caption(f"Import: {imp}  ·  Export: {exp}")
-        if current_lead.get('director_change_recent'):
-            st.warning(f"🔄 Recent director change ({current_lead.get('last_director_change')})")
+        render_profile(current_lead)
 
-        lead_score = current_lead.get('lead_score') or 0
-        st.progress(min(lead_score, 100) / 100, text=f"🎯 Lead Score: {lead_score}/100")
+    # ---------- VALIDATE & DECIDE (input area — visually separate) ----------
+    with st.container(border=True):
+        st.markdown("<div class='mm-label'>Sources — confirm each, or fix it</div>",
+                    unsafe_allow_html=True)
         score = current_lead.get('confidence_score') or 0
-        st.progress(score / 100, text=f"Data Confidence: {score}%")
-
-        # --- QUICK LINKS & VALIDATION ---
-        st.markdown("### Source Links & Validation")
+        st.progress(score / 100, text=f"📊 Data confidence: {score}%")
         col1, col2 = st.columns(2)
-
         with col1:
-            # Prefer a previously-supplied correction (e.g. from when this lead
-            # was passed and is now being re-handed) over the scraped URL.
+            # Prefer a previously-supplied correction over the scraped URL.
             website = current_lead.get('corrected_website_url') or current_lead['website_url']
             if website:
                 note = " ✏️ *corrected*" if current_lead.get('corrected_website_url') else ""
@@ -210,7 +200,6 @@ def main_app():
             else:
                 st.markdown("**🌐 Website:** ❌ Not Found")
                 correction_input("web_val", current_lead['id'], "Website")
-
         with col2:
             linkedin = current_lead.get('corrected_linkedin_url') or current_lead['linkedin_url']
             if linkedin:
@@ -222,21 +211,14 @@ def main_app():
                 correction_input("li_val", current_lead['id'], "LinkedIn")
 
         st.divider()
-
-        # --- THE DECISION ENGINE ---
-        st.markdown("### Pipeline Decision")
-
+        st.markdown("<div class='mm-label'>Decision</div>", unsafe_allow_html=True)
         col_pass, col_approve = st.columns(2)
-
         with col_pass:
             # Reason dropdown + archive button live in a fragment, so picking a
             # reason doesn't reload the whole lead view.
             pass_control(current_lead)
-
         with col_approve:
-            # Approve is a fast yes: mark it approved and stash the validation
-            # toggles onto the lead, then advance immediately. It changes the page
-            # (next lead), so it stays a normal full-app button — not a fragment.
+            # Approve: mark approved, stash the validation toggles, advance.
             st.markdown("&nbsp;")  # spacer to align the button with Pass
             if st.button("✅ Approve", type="primary", use_container_width=True):
                 corrected = _corrected_values(current_lead['id'])
@@ -250,10 +232,8 @@ def main_app():
                             **corrected,
                         )
                     )
-                    # Award leaderboard points (1 swipe + any URLs the AE added)
                     award_activity(conn, st.session_state.username,
                                    urls_added=len(corrected), leads_swiped=1)
-                # Advance locally — instant, no DB re-query.
                 st.session_state.lead_queue.pop(0)
                 st.rerun()
 

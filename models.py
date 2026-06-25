@@ -6,7 +6,7 @@ whole schema is known.
 from datetime import datetime
 
 from sqlalchemy import (
-    Table, Column, Integer, String, Date, Boolean, DateTime, text,
+    Table, Column, Integer, BigInteger, String, Date, Boolean, DateTime, text,
 )
 
 from database import engine, metadata
@@ -42,6 +42,17 @@ sales_leads = Table(
     Column('import_activity', Boolean),               # appears as an importer in HMRC UK Trade Info
     Column('export_activity', Boolean),               # appears as an exporter in HMRC UK Trade Info
     Column('lead_score', Integer),                    # composite 0-100 base score (scoring.py)
+    Column('employee_count', Integer),                # parsed from the filed accounts (second enrichment)
+    # Financials parsed from the accounts (second enrichment). BigInteger as
+    # turnover etc. can exceed the 32-bit INT range; foreign_exchange is signed.
+    Column('turnover', BigInteger),
+    Column('cash_at_bank', BigInteger),
+    Column('foreign_exchange', BigInteger),
+    Column('trade_debtors', BigInteger),
+    Column('trade_creditors', BigInteger),
+    Column('admin_expenses', BigInteger),
+    Column('bank_loans_overdrafts', BigInteger),
+    Column('second_enriched', Boolean),              # accounts document processed?
     Column('linkedin_raw_title', String),
     Column('linkedin_raw_snippet', String),
     Column('status', String(50), default='sourced'),
@@ -137,6 +148,15 @@ pipeline_archive = Table(
     Column('import_activity', Boolean),
     Column('export_activity', Boolean),
     Column('lead_score', Integer),
+    Column('employee_count', Integer),
+    Column('turnover', BigInteger),
+    Column('cash_at_bank', BigInteger),
+    Column('foreign_exchange', BigInteger),
+    Column('trade_debtors', BigInteger),
+    Column('trade_creditors', BigInteger),
+    Column('admin_expenses', BigInteger),
+    Column('bank_loans_overdrafts', BigInteger),
+    Column('second_enriched', Boolean),
     Column('linkedin_raw_title', String),
     Column('linkedin_raw_snippet', String),
     Column('status', String(50)),
@@ -195,6 +215,15 @@ _ADDED_COLUMNS = {
     "import_activity": "BOOLEAN",
     "export_activity": "BOOLEAN",
     "lead_score": "INTEGER",
+    "employee_count": "INTEGER",
+    "turnover": "BIGINT",
+    "cash_at_bank": "BIGINT",
+    "foreign_exchange": "BIGINT",
+    "trade_debtors": "BIGINT",
+    "trade_creditors": "BIGINT",
+    "admin_expenses": "BIGINT",
+    "bank_loans_overdrafts": "BIGINT",
+    "second_enriched": "BOOLEAN",
 }
 try:
     with engine.begin() as _conn:

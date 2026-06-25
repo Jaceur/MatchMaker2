@@ -452,6 +452,12 @@ def enrich_one_lead(record):
     ch = fetch_ch_signals(record.crn)
     trade = fetch_trade_activity(company_name_clean)
 
+    # Dormant companies aren't worth pursuing — force them out of Tier 3+ by
+    # zeroing confidence (account_type still records 'dormant' for the record).
+    if "dormant" in (ch["account_type"] or "").lower():
+        combined_score = 0
+        print(" -> DORMANT company — forced to Tier 4 (confidence 0)")
+
     lead_score = score_lead(
         confidence_score=combined_score,
         account_type=ch["account_type"],

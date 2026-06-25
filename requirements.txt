@@ -10,3 +10,8 @@ pandas
 bcrypt
 rapidfuzz
 extra-streamlit-components
+# Second enrichment (local accounts parsing). pdf2image needs the poppler binary
+# and pytesseract needs the tesseract binary installed on the machine running it.
+pdfplumber
+pdf2image
+pytesseract

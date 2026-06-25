@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from models import sales_leads, ml_pipeline_analytics, director_emails
 from leads import build_ml_row, award_activity
 from directors import enrich_lead_directors, email_candidates, domain_from_url
+from lead_card import render_profile
 
 CRM_STATUS_OPTIONS = ["Net New", "Existing Lead", "Existing Account", "Won", "Disqualified"]
 
@@ -18,10 +19,7 @@ def get_unclassified_leads(_engine, username: str):
     """Approved leads that still need a CRM status — i.e. no ML row written yet.
     These come straight off the swipe page's 'Approve' action."""
     query = text("""
-        SELECT id, crn, company_name, incorporation_date, active_directors,
-               directors_enriched, confidence_score, website_score, linkedin_score,
-               website_url, linkedin_url, website_accurate, linkedin_accurate,
-               corrected_website_url, corrected_linkedin_url
+        SELECT sl.*
         FROM sales_leads sl
         WHERE assigned_ae_username = :username
           AND status = 'approved'
@@ -125,7 +123,7 @@ def _classify_card(engine, lead: dict, username: str):
     card (not the other cards, the metrics, or the summary table below); saving
     escalates to a full-app rerun so the lead drops off the list."""
     with st.container(border=True):
-        st.markdown(f"**🏢 {lead['company_name']}**  ·  Match {lead.get('confidence_score') or 0}%")
+        render_profile(lead)
 
         # Prefer the AE-supplied correction over the scraped URL; ✏️ flags it.
         links = []
