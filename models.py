@@ -202,6 +202,17 @@ ae_stats = Table(
     Column('leads_saved', Integer, default=0),
 )
 
+# ==========================================
+# SIC CODE REFERENCE
+# ==========================================
+# Companies House nature-of-business codes -> human description. Seeded from
+# sic_data.py; the swipe card translates a lead's sic_codes against this.
+sic_lookup = Table(
+    'sic_lookup', metadata,
+    Column('code', String(10), primary_key=True),
+    Column('description', String(255)),
+)
+
 # Every table is now declared — build them all in one shot. Safe to run on each
 # boot: it only creates tables that don't already exist.
 metadata.create_all(engine)

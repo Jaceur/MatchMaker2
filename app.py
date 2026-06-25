@@ -37,6 +37,21 @@ def _secure_passwords_once():
 
 _secure_passwords_once()
 
+
+# Seed the SIC code reference table once per process (cached). Wrapped so a
+# failure can never block the app.
+@st.cache_resource
+def _seed_sic_once():
+    try:
+        from sic_data import load_sic_lookup
+        return load_sic_lookup()
+    except Exception as e:
+        print(f"SIC seed skipped: {e}")
+        return 0
+
+
+_seed_sic_once()
+
 # Cookie-backed session: survives a page refresh and returns within the 10-min
 # idle window. The manager renders a small component, so it must come after
 # set_page_config.

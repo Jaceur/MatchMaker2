@@ -6,6 +6,8 @@ banner, chips and metric tiles. No DB or page-specific state.
 """
 import streamlit as st
 
+from sic_data import get_sic_lookup
+
 
 def fmt_money(v):
     """£1,234,567 / -£15,400 / — (when None)."""
@@ -36,12 +38,13 @@ def _size_chip(account_type):
 CARD_CSS = """
 <style>
 .mm-banner {
-  background: linear-gradient(135deg, #fd297b 0%, #ff5864 55%, #ff655b 100%);
-  color: #fff; padding: 20px 24px; border-radius: 16px;
+  background: linear-gradient(135deg, #2a2a2e 0%, #45454d 50%, #303036 100%);
+  color: #f4f4f6; padding: 20px 24px; border-radius: 16px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10), inset 0 -1px 0 rgba(0,0,0,.25);
 }
-.mm-banner .mm-name { font-size: 1.5rem; font-weight: 800; line-height: 1.15; }
-.mm-banner .mm-sub  { opacity: .92; font-size: .88rem; margin-top: 6px; }
-.mm-chips { margin-top: 12px; }
+.mm-banner .mm-name { font-size: 1.5rem; font-weight: 800; line-height: 1.15; color:#fff; }
+.mm-banner .mm-sub  { opacity: .85; font-size: .88rem; margin-top: 6px; }
+.mm-chips { margin: 12px 0 18px 0; }
 .mm-chip {
   display: inline-block; background: #eef0f4; color: #3a3f47;
   border-radius: 999px; padding: 4px 12px; margin: 6px 6px 0 0;
@@ -104,3 +107,16 @@ def render_profile(lead):
     g1.metric("🧾 Admin expenses", fmt_money(lead.get('admin_expenses')))
     g2.metric("🏛️ Bank loans", fmt_money(lead.get('bank_loans_overdrafts')))
     g3.metric("💱 FX gain/loss", fmt_money(lead.get('foreign_exchange')))
+
+    # Nature of business — SIC codes with their Companies House descriptions.
+    codes = [c.strip() for c in (lead.get('sic_codes') or "").split(",") if c.strip()]
+    if codes:
+        lookup = get_sic_lookup()
+        st.markdown("<div class='mm-label'>Nature of business — SIC codes</div>",
+                    unsafe_allow_html=True)
+        for c in codes:
+            st.markdown(
+                f"<div style='font-size:.85rem; margin-top:2px'>🏭 <b>{c}</b> — "
+                f"{lookup.get(c, 'description not loaded')}</div>",
+                unsafe_allow_html=True,
+            )
