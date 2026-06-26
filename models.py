@@ -246,3 +246,21 @@ try:
                 ))
 except Exception as _e:
     print(f"Schema migration (trade/lead_score columns) skipped: {_e}")
+
+# Indexes for the columns the latency-sensitive queries filter and sort by: the
+# swipe queue (get_pending_leads) and lead allocation (assign_leads_to_ae) both
+# filter on status + assigned_ae_username and order by confidence_score, none of
+# which was indexed — so each query scanned the whole table. As with the columns
+# above, create_all won't add an index to an existing table, so do it idempotently.
+# CREATE INDEX IF NOT EXISTS is a no-op once the index exists; it adds no data,
+# only a faster lookup path, and can be dropped again with no data loss.
+_INDEXES = {
+    "ix_sales_leads_status_ae_score":
+        "sales_leads (status, assigned_ae_username, confidence_score)",
+}
+try:
+    with engine.begin() as _conn:
+        for _ix_name, _ix_target in _INDEXES.items():
+            _conn.execute(text(f"CREATE INDEX IF NOT EXISTS {_ix_name} ON {_ix_target}"))
+except Exception as _e:
+    print(f"Index migration skipped: {_e}")
