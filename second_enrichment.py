@@ -41,7 +41,9 @@ ACCOUNTS_FIELDS = {
     "employee_count":        {"concepts": ["averagenumberemployees"]},
     "turnover":              {"concepts": ["turnoverrevenue", "turnover"],
                               "labels": [r"\bturnover\b", r"\brevenue\b"]},
-    "cash_at_bank":          {"concepts": ["cashbankinhand", "cashandcashequivalents", "cashatbank"],
+    # "cashbank" matches the taxonomy's CashBankOnHand AND CashBankInHand (the
+    # spelling varies); "cashatbank" covers CashAtBankAndInHand.
+    "cash_at_bank":          {"concepts": ["cashbank", "cashatbank", "cashandcashequivalents"],
                               "labels": [r"cash at bank and in hand", r"cash at bank",
                                          r"cash and cash equivalents"]},
     "foreign_exchange":      {"concepts": ["foreignexchangegainslosses", "foreignexchange"],
@@ -156,9 +158,15 @@ def _ixbrl_value(tag):
 def _parse_ixbrl(content):
     """Pull fields from an iXBRL document by matching tag `name` attributes. The
     first match (usually the current period) wins; magnitudes are stored positive
-    except for the explicitly-signed fields (foreign_exchange)."""
+    except for the explicitly-signed fields (foreign_exchange).
+
+    `seen` tracks fields whose concept tag appeared at all, so the debug line can
+    distinguish '?(concept,no val)' — a tag we matched but couldn't read a number
+    from (e.g. an empty or xsi:nil fact: worth investigating) — from 'absent' (no
+    such concept in the filing, e.g. filleted accounts). Mirrors the PDF '[fin]'."""
     soup = BeautifulSoup(content, "html.parser")
     data = {field: None for field in ACCOUNTS_FIELDS}
+    seen = set()                       # fields whose concept tag appeared at all
     for tag in soup.find_all(True):
         nm = tag.get("name")
         if not nm:
@@ -168,11 +176,21 @@ def _parse_ixbrl(content):
             if data[field] is not None:
                 continue
             if any(c in nm_lower for c in cfg["concepts"]):
+                seen.add(field)
                 val = _ixbrl_value(tag)
                 if val is not None:
                     data[field] = val if cfg.get("signed") else abs(val)
-    print("   [fin/ixbrl] " + " · ".join(
-        f"{k}={v}" for k, v in data.items() if k != "employee_count"))
+    dbg = []
+    for field in ACCOUNTS_FIELDS:
+        if field == "employee_count":
+            continue
+        if data[field] is not None:
+            dbg.append(f"{field}={data[field]}")
+        elif field in seen:
+            dbg.append(f"{field}=?(concept,no val)")    # tag present, value unreadable
+        else:
+            dbg.append(f"{field}=absent")               # concept not in the filing
+    print("   [fin/ixbrl] " + " · ".join(dbg))
     return data
 
 
