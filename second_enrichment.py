@@ -131,8 +131,11 @@ def download_accounts(metadata_url):
 # PARSERS
 # ==========================================
 def _ixbrl_value(tag):
-    """Numeric value of an iXBRL fact, honouring its `scale` (power of ten) and
-    `sign` attributes. 'nil' -> 0; non-numeric -> None."""
+    """Integer value of an iXBRL fact, honouring its `scale` (power of ten) and
+    `sign`. 'nil' -> 0; non-numeric -> None. Only a POSITIVE scale is applied
+    (thousands/millions); a negative scale would make the value fractional, which
+    is meaningless for these whole-number columns (e.g. a count of 4 mis-tagged
+    scale='-2' must stay 4, not become 0.04 and break the INTEGER write)."""
     raw = tag.get_text() or ""
     if not re.search(r"\d", raw):
         return 0 if "nil" in raw.lower() else None
@@ -140,7 +143,9 @@ def _ixbrl_value(tag):
     scale = tag.get("scale")
     if scale:
         try:
-            val *= 10 ** int(scale)
+            s = int(scale)
+            if s > 0:
+                val *= 10 ** s
         except ValueError:
             pass
     if (tag.get("sign") or "").strip() == "-":
@@ -166,6 +171,8 @@ def _parse_ixbrl(content):
                 val = _ixbrl_value(tag)
                 if val is not None:
                     data[field] = val if cfg.get("signed") else abs(val)
+    print("   [fin/ixbrl] " + " · ".join(
+        f"{k}={v}" for k, v in data.items() if k != "employee_count"))
     return data
 
 
@@ -269,10 +276,19 @@ def _parse_pdf(content):
     in_thousands = bool(re.search(r"£\s*'?\s*000|in thousands", text))
     data = {field: None for field in ACCOUNTS_FIELDS}
     data["employee_count"] = _employee_count_from_text(text)
+    dbg = []
     for field, cfg in ACCOUNTS_FIELDS.items():
         if "labels" not in cfg:
             continue
-        data[field] = _money_after_label(text, cfg["labels"], cfg.get("signed", False), in_thousands)
+        val = _money_after_label(text, cfg["labels"], cfg.get("signed", False), in_thousands)
+        data[field] = val
+        if val is not None:
+            dbg.append(f"{field}={val}")
+        elif any(re.search(lbl, text) for lbl in cfg["labels"]):
+            dbg.append(f"{field}=?(label,no num)")     # in the doc but not parsed
+        else:
+            dbg.append(f"{field}=absent")              # not in the filing (e.g. filleted, no P&L)
+    print(f"   [fin] {'£000s' if in_thousands else '£'} · " + " · ".join(dbg))
     return data
 
 
@@ -293,6 +309,10 @@ def second_enrich_lead(crn):
     print(f"   parsing {kind} ({len(content)} bytes)")
     parsed = _parse_ixbrl(content) if kind == "ixbrl" else _parse_pdf(content)
     result.update({k: v for k, v in parsed.items() if v is not None})
+    # Safety net: every stored field is INTEGER/BIGINT — never let a float through.
+    for k, v in list(result.items()):
+        if isinstance(v, float):
+            result[k] = int(round(v))
     return result
 
 
