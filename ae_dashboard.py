@@ -26,7 +26,7 @@ def get_unclassified_leads(_engine, username: str):
           AND NOT EXISTS (
               SELECT 1 FROM ml_pipeline_analytics m WHERE m.lead_id = sl.id
           )
-        ORDER BY updated_at DESC
+        ORDER BY updated_at DESC, sl.id DESC
     """)
     with _engine.connect() as conn:
         return [dict(r) for r in conn.execute(query, {"username": username}).mappings().fetchall()]

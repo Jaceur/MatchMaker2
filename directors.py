@@ -118,6 +118,14 @@ def enrich_lead_directors(lead_id, crn):
     with engine.begin() as conn:
         conn.execute(
             update(sales_leads).where(sales_leads.c.id == lead_id)
-            .values(active_directors=", ".join(names), directors_enriched=True)
+            .values(
+                active_directors=", ".join(names),
+                directors_enriched=True,
+                # Keep updated_at unchanged: enriching directors shouldn't bump the
+                # lead to the top of the My-Pipeline list (which orders by
+                # updated_at). Assigning the column to itself suppresses the
+                # onupdate=utcnow default, so the lead keeps its place.
+                updated_at=sales_leads.c.updated_at,
+            )
         )
     return names
