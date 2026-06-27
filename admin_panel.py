@@ -5,6 +5,12 @@ from sqlalchemy import text
 from sourcing import run_sourcing_pipeline
 from enrichment import run_enrichment_pipeline
 from leads import clear_all_data, clear_pipeline_data, assign_leads_to_ae, TIER_THRESHOLD
+from settings import get_qualify_percent, set_qualify_percent, qualify_percent_to_bar
+
+
+def _save_qualify_bar():
+    """Persist the qualification slider whenever it moves (on_change callback)."""
+    set_qualify_percent(st.session_state.qualify_slider)
 
 
 # ==========================================
@@ -130,6 +136,35 @@ def render_dashboard(engine):
             "🗂️ Tier 4 Leads (held back from AEs)", stats['tier4'],
             help=(f"Enriched leads scoring ≤ {TIER_THRESHOLD}%. Not sent to AEs. "
                   "Lower the threshold as the model improves to release more."),
+        )
+
+    st.divider()
+
+    # --- LEAD QUALIFICATION BAR (admin-tunable) ---
+    with st.container(border=True):
+        st.markdown("### 🎚️ Lead Qualification Bar")
+        if "qualify_slider" not in st.session_state:
+            st.session_state.qualify_slider = get_qualify_percent()
+        pct = st.slider(
+            "How selective should the pipeline be?",
+            min_value=0, max_value=100, step=5, format="%d%%",
+            key="qualify_slider", on_change=_save_qualify_bar,
+            help="0% lets most real companies through (score bar 30/100); "
+                 "100% keeps only the strongest (bar 70/100). 50% is the default.",
+        )
+        bar = qualify_percent_to_bar(pct)
+        with engine.connect() as conn:
+            counts = conn.execute(text(
+                "SELECT COUNT(*) FILTER (WHERE lead_score IS NOT NULL) AS scored, "
+                "COUNT(*) FILTER (WHERE lead_score >= :bar) AS passing "
+                "FROM sales_leads"
+            ), {"bar": bar}).mappings().fetchone()
+        scored = (counts or {}).get("scored") or 0
+        passing = (counts or {}).get("passing") or 0
+        st.caption(
+            f"Leads must score **≥ {bar}/100** to reach AEs ({pct}% → bar {bar}). "
+            f"Right now **{passing} of {scored}** scored leads clear this bar "
+            "— lead scores update as leads are enriched."
         )
 
     st.divider()

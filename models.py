@@ -213,6 +213,18 @@ sic_lookup = Table(
     Column('description', String(255)),
 )
 
+# ==========================================
+# RUNTIME SETTINGS (key/value)
+# ==========================================
+# Small store for values tuned at runtime from the admin dashboard (today: the
+# lead-qualification bar). A brand-new table, so create_all builds it for us —
+# no ADD COLUMN migration needed.
+app_settings = Table(
+    'app_settings', metadata,
+    Column('key', String(50), primary_key=True),
+    Column('value', String(255)),
+)
+
 # Every table is now declared — build them all in one shot. Safe to run on each
 # boot: it only creates tables that don't already exist.
 metadata.create_all(engine)
