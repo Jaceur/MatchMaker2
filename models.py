@@ -57,6 +57,7 @@ sales_leads = Table(
     Column('linkedin_raw_snippet', String),
     Column('status', String(50), default='sourced'),
     Column('screen_reason', String(255)),            # why the pipeline screened a lead out (stage + reason)
+    Column('is_holdout', Boolean),                    # bypassed the gates for unbiased training data
     Column('assigned_ae_username', String(100)),
     Column('assigned_date', DateTime),
     # Per-source scraper scores (0-100) kept distinct from the combined
@@ -162,6 +163,7 @@ pipeline_archive = Table(
     Column('linkedin_raw_snippet', String),
     Column('status', String(50)),
     Column('screen_reason', String(255)),
+    Column('is_holdout', Boolean),
     Column('assigned_ae_username', String(100)),
     Column('assigned_date', DateTime),
     Column('website_score', Integer),
@@ -227,6 +229,38 @@ app_settings = Table(
     Column('value', String(255)),
 )
 
+# ==========================================
+# SCREENING LOG (ML training data)
+# ==========================================
+# One row per lead the staged pipeline processes: the features the score was
+# based on + the score + the decision + the holdout flag. A durable snapshot
+# (survives a later re-enrichment) that pairs with the AE's eventual verdict in
+# ml_pipeline_analytics (by lead_id) to train the future scoring model. New
+# table, so create_all builds it automatically.
+screening_log = Table(
+    'screening_log', metadata,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('lead_id', Integer),
+    Column('crn', String(20)),
+    Column('company_name', String(255)),
+    # the features (the future model's inputs):
+    Column('account_type', String(50)),
+    Column('employee_count', Integer),
+    Column('turnover', BigInteger),
+    Column('cash_at_bank', BigInteger),
+    Column('foreign_exchange', BigInteger),
+    Column('import_activity', Boolean),
+    Column('export_activity', Boolean),
+    Column('director_change_recent', Boolean),
+    # the decision:
+    Column('lead_score', Integer),
+    Column('qualify_bar', Integer),
+    Column('qualified', Boolean),
+    Column('is_holdout', Boolean),
+    Column('screen_reason', String(255)),
+    Column('created_at', DateTime, default=datetime.utcnow),
+)
+
 # Every table is now declared — build them all in one shot. Safe to run on each
 # boot: it only creates tables that don't already exist.
 metadata.create_all(engine)
@@ -250,6 +284,7 @@ _ADDED_COLUMNS = {
     "bank_loans_overdrafts": "BIGINT",
     "second_enriched": "BOOLEAN",
     "screen_reason": "VARCHAR(255)",
+    "is_holdout": "BOOLEAN",
 }
 try:
     with engine.begin() as _conn:
