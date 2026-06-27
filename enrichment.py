@@ -13,7 +13,7 @@ from sqlalchemy import select, update
 
 from database import engine
 from models import sales_leads
-from scoring import score_lead
+from scoring import score_lead, LeadFeatures
 
 # Legal/structural words that add no identifying signal when matching a company
 # name against a LinkedIn slug.
@@ -458,13 +458,14 @@ def enrich_one_lead(record):
         combined_score = 0
         print(" -> DORMANT company — forced to Tier 4 (confidence 0)")
 
-    lead_score = score_lead(
-        confidence_score=combined_score,
+    # Provisional fit score from the cheap signals we have now. It gets recomputed
+    # with the financials (cash / FX / turnover) once second enrichment runs.
+    lead_score = score_lead(LeadFeatures(
         account_type=ch["account_type"],
         import_activity=trade["imports"],
         export_activity=trade["exports"],
         director_change_recent=ch["director_change_recent"],
-    )
+    ))
 
     return {
         "website_url": found_domain,

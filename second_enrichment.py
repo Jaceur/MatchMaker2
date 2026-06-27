@@ -23,6 +23,7 @@ from sqlalchemy import select, update
 from database import engine
 from models import sales_leads
 from leads import TIER_THRESHOLD
+from scoring import score_lead, features_from_mapping
 
 CH_FILING_URL = "https://api.company-information.service.gov.uk/company/{crn}/filing-history"
 
@@ -357,11 +358,14 @@ def second_enrich_tier3(limit=None, progress_callback=None):
     for rec in records:
         print(f"\n[{done + 1}/{total}] {rec['company_name']} ({rec['crn']})")
         data = second_enrich_lead(rec['crn'])
+        # The financials now exist, so recompute the fit score from the full
+        # picture: the cheap signals already on the row + the new figures.
+        lead_score = score_lead(features_from_mapping({**dict(rec), **data}))
         with engine.begin() as conn:
             conn.execute(
                 update(sales_leads)
                 .where(sales_leads.c.id == rec['id'])
-                .values(second_enriched=True, **data)
+                .values(second_enriched=True, lead_score=lead_score, **data)
             )
         done += 1
         if progress_callback:
