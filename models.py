@@ -56,6 +56,7 @@ sales_leads = Table(
     Column('linkedin_raw_title', String),
     Column('linkedin_raw_snippet', String),
     Column('status', String(50), default='sourced'),
+    Column('screen_reason', String(255)),            # why the pipeline screened a lead out (stage + reason)
     Column('assigned_ae_username', String(100)),
     Column('assigned_date', DateTime),
     # Per-source scraper scores (0-100) kept distinct from the combined
@@ -160,6 +161,7 @@ pipeline_archive = Table(
     Column('linkedin_raw_title', String),
     Column('linkedin_raw_snippet', String),
     Column('status', String(50)),
+    Column('screen_reason', String(255)),
     Column('assigned_ae_username', String(100)),
     Column('assigned_date', DateTime),
     Column('website_score', Integer),
@@ -247,6 +249,7 @@ _ADDED_COLUMNS = {
     "admin_expenses": "BIGINT",
     "bank_loans_overdrafts": "BIGINT",
     "second_enriched": "BOOLEAN",
+    "screen_reason": "VARCHAR(255)",
 }
 try:
     with engine.begin() as _conn:

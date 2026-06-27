@@ -18,7 +18,7 @@ import time
 # Quieten Streamlit's "missing ScriptRunContext" warnings when run outside the app.
 logging.getLogger("streamlit").setLevel(logging.ERROR)
 
-from enrichment import enrich_sourced_leads  # noqa: E402  (after logging setup)
+from pipeline import run_pipeline  # noqa: E402  (after logging setup)
 
 
 def _progress(done, total, name):
@@ -42,7 +42,7 @@ def main():
     print(f"Enriching {target} (writing to Cloud SQL)...\n")
 
     start = time.time()
-    count = enrich_sourced_leads(limit=limit, progress_callback=_progress)
+    count = run_pipeline(limit=limit, progress_callback=_progress)
     elapsed = (time.time() - start) / 60
     print(f"\n\nDone — enriched {count} leads in {elapsed:.1f} min.")
 

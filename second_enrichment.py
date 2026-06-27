@@ -183,8 +183,6 @@ def _parse_ixbrl(content):
                     data[field] = val if cfg.get("signed") else abs(val)
     dbg = []
     for field in ACCOUNTS_FIELDS:
-        if field == "employee_count":
-            continue
         if data[field] is not None:
             dbg.append(f"{field}={data[field]}")
         elif field in seen:

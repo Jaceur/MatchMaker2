@@ -351,19 +351,23 @@ def _extract_linkedin_from_site(url):
     return None
 
 
-def enrich_one_lead(record):
-    """Does all the slow internet work for a single company and returns
-    everything we learned. No database writing happens in here."""
-    company_name_strict = re.sub(r'\s+', ' ', record.company_name).strip()
-    company_name_clean = re.sub(
+def clean_company_name(raw):
+    """Return (strict, clean): strict = whitespace-normalised name; clean = strict
+    with common legal / structural suffix words (LTD, GROUP, UK, ...) removed."""
+    strict = re.sub(r'\s+', ' ', raw).strip()
+    clean = re.sub(
         r'\b(LTD|LIMITED|LLP|PLC|UK|HOLDINGS|GROUP|ENTERPRISES|SERVICES)\b',
-        '', company_name_strict, flags=re.IGNORECASE
+        '', strict, flags=re.IGNORECASE,
     ).strip()
+    return strict, clean
 
-    print(f"\nEnriching: {company_name_strict}")
 
-    # Start every score at zero BEFORE any internet calls. If a search
-    # blows up, these safe defaults still exist and nothing crashes.
+def fetch_web_presence(company_name_clean, company_name_strict):
+    """Search the web for the company's own website and LinkedIn /company/ page,
+    score each, and combine them into one 0-100 confidence number. Returns the
+    URLs (when confident enough) plus the raw scores. This is the SLOW step, so
+    the staged pipeline runs it LAST — only on leads that already qualify on fit."""
+    # Safe defaults: if a search blows up these still exist and nothing crashes.
     found_domain = None
     best_score = 0
     found_linkedin = None
@@ -447,11 +451,33 @@ def enrich_one_lead(record):
 
     print(f" -> Website: {found_domain} ({web_status})")
     print(f" -> LinkedIn: {found_linkedin} ({li_status})")
-    print(f" -> OVERALL SCORE: {combined_score}")
+    print(f" -> CONFIDENCE: {combined_score}")
+    return {
+        "website_url": found_domain,
+        "linkedin_url": found_linkedin,
+        "linkedin_raw_title": best_li_title,
+        "linkedin_raw_snippet": best_li_snippet,
+        "website_score": best_score,
+        "linkedin_score": best_li_score,
+        "confidence_score": combined_score,
+    }
 
+
+def enrich_one_lead(record):
+    """Does all the slow internet work for a single company and returns
+    everything we learned. No database writing happens in here.
+
+    NOTE: this is the older single-pass enrichment (web first, then CH/trade),
+    still used by the admin "Run Enrichment" button. New 'sourced' leads go
+    through the staged pipeline in pipeline.py instead."""
+    company_name_strict, company_name_clean = clean_company_name(record.company_name)
+    print(f"\nEnriching: {company_name_strict}")
+
+    web = fetch_web_presence(company_name_clean, company_name_strict)
     ch = fetch_ch_signals(record.crn)
     trade = fetch_trade_activity(company_name_clean)
 
+    combined_score = web["confidence_score"]
     # Dormant companies aren't worth pursuing — force them out of Tier 3+ by
     # zeroing confidence (account_type still records 'dormant' for the record).
     if "dormant" in (ch["account_type"] or "").lower():
@@ -468,12 +494,12 @@ def enrich_one_lead(record):
     ))
 
     return {
-        "website_url": found_domain,
-        "linkedin_url": found_linkedin,
-        "linkedin_raw_title": best_li_title,
-        "linkedin_raw_snippet": best_li_snippet,
-        "website_score": best_score,
-        "linkedin_score": best_li_score,
+        "website_url": web["website_url"],
+        "linkedin_url": web["linkedin_url"],
+        "linkedin_raw_title": web["linkedin_raw_title"],
+        "linkedin_raw_snippet": web["linkedin_raw_snippet"],
+        "website_score": web["website_score"],
+        "linkedin_score": web["linkedin_score"],
         "confidence_score": combined_score,
         "account_type": ch["account_type"],
         "last_director_change": ch["last_director_change"],
