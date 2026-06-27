@@ -9,11 +9,6 @@ import streamlit as st
 from ddgs import DDGS
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz  # pip install rapidfuzz
-from sqlalchemy import select, update
-
-from database import engine
-from models import sales_leads
-from scoring import score_lead, LeadFeatures
 
 # Legal/structural words that add no identifying signal when matching a company
 # name against a LinkedIn slug.
@@ -463,99 +458,9 @@ def fetch_web_presence(company_name_clean, company_name_strict):
     }
 
 
-def enrich_one_lead(record):
-    """Does all the slow internet work for a single company and returns
-    everything we learned. No database writing happens in here.
-
-    NOTE: this is the older single-pass enrichment (web first, then CH/trade),
-    still used by the admin "Run Enrichment" button. New 'sourced' leads go
-    through the staged pipeline in pipeline.py instead."""
-    company_name_strict, company_name_clean = clean_company_name(record.company_name)
-    print(f"\nEnriching: {company_name_strict}")
-
-    web = fetch_web_presence(company_name_clean, company_name_strict)
-    ch = fetch_ch_signals(record.crn)
-    trade = fetch_trade_activity(company_name_clean)
-
-    combined_score = web["confidence_score"]
-    # Dormant companies aren't worth pursuing — force them out of Tier 3+ by
-    # zeroing confidence (account_type still records 'dormant' for the record).
-    if "dormant" in (ch["account_type"] or "").lower():
-        combined_score = 0
-        print(" -> DORMANT company — forced to Tier 4 (confidence 0)")
-
-    # Provisional fit score from the cheap signals we have now. It gets recomputed
-    # with the financials (cash / FX / turnover) once second enrichment runs.
-    lead_score = score_lead(LeadFeatures(
-        account_type=ch["account_type"],
-        import_activity=trade["imports"],
-        export_activity=trade["exports"],
-        director_change_recent=ch["director_change_recent"],
-    ))
-
-    return {
-        "website_url": web["website_url"],
-        "linkedin_url": web["linkedin_url"],
-        "linkedin_raw_title": web["linkedin_raw_title"],
-        "linkedin_raw_snippet": web["linkedin_raw_snippet"],
-        "website_score": web["website_score"],
-        "linkedin_score": web["linkedin_score"],
-        "confidence_score": combined_score,
-        "account_type": ch["account_type"],
-        "last_director_change": ch["last_director_change"],
-        "director_change_recent": ch["director_change_recent"],
-        "import_activity": trade["imports"],
-        "export_activity": trade["exports"],
-        "lead_score": lead_score,
-        "status": "ready_for_swipe",
-    }
-
-
-def enrich_sourced_leads(limit=None, progress_callback=None):
-    """Enrich every 'sourced' lead, saving each as it goes.
-
-    progress_callback, if given, is called once per lead as
-    progress_callback(done, total, company_name) — `done` leads finished out of
-    `total`, plus the name of the one just completed — so a UI can drive a live
-    progress bar.
-    """
-    print("Starting enrichment phase...")
-
-    # Step 1: a quick in-and-out trip to the database to get the list.
-    with engine.connect() as connection:
-        query = select(sales_leads).where(sales_leads.c.status == 'sourced')
-        if limit is not None:
-            query = query.limit(limit)
-        records_to_enrich = connection.execute(query).fetchall()
-
-    if not records_to_enrich:
-        print("No new leads to enrich.")
-        return 0
-
-    total = len(records_to_enrich)
-    print(f"Found {total} leads to enrich...")
-
-    # Step 2: do the slow internet work one lead at a time, and save each
-    # result immediately. If the batch dies at lead 80, leads 1-79 are
-    # already safely in the database.
-    enriched_count = 0
-    for record in records_to_enrich:
-        enrichment = enrich_one_lead(record)
-        with engine.begin() as connection:
-            connection.execute(
-                update(sales_leads)
-                .where(sales_leads.c.id == record.id)
-                .values(**enrichment)
-            )
-        enriched_count += 1
-        if progress_callback:
-            progress_callback(enriched_count, total, record.company_name)
-
-    print("\nEnrichment batch complete!")
-    return enriched_count
-
-
-def run_enrichment_pipeline(progress_callback=None):
-    print("UI Triggered: Enrichment Pipeline...")
-    count = enrich_sourced_leads(limit=100, progress_callback=progress_callback)
-    return f"Enrichment complete! {count} leads processed."
+# NOTE: the old single-pass enrichment (enrich_one_lead / enrich_sourced_leads /
+# run_enrichment_pipeline) was removed once the staged pipeline in pipeline.py
+# became the single enrichment path for every entry point (admin button, CLI,
+# enrich_local). The building-block functions above — clean_company_name,
+# fetch_web_presence, fetch_ch_signals, fetch_trade_activity — live on and are
+# imported by pipeline.py.

@@ -76,7 +76,7 @@ def _fx_points(import_activity, export_activity, foreign_exchange):
     return min(pts, FX_MAX)
 
 
-def _account_tier(account_type):
+def account_tier(account_type):
     """Bucket a Companies House account category into small / micro / large.
 
     The audit / total-exemption and abridged types are SMALL companies — even
@@ -106,7 +106,7 @@ def _turnover_points(turnover, account_type):
         if turnover >= 100_000:
             return 14
         return 8
-    tier = _account_tier(account_type)
+    tier = account_tier(account_type)
     if tier == "small":
         return 16
     if tier == "micro":
@@ -117,7 +117,7 @@ def _turnover_points(turnover, account_type):
 def _substance_points(account_type, employee_count):
     """A real, trading business rather than a dormant shell: the account-size
     category plus employee headcount where the accounts give it."""
-    size = {"small": 15, "micro": 7, "large": 5}.get(_account_tier(account_type), 0)
+    size = {"small": 15, "micro": 7, "large": 5}.get(account_tier(account_type), 0)
     emp = 0
     if employee_count is not None:
         if employee_count >= 10:

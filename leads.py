@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
 from models import sales_leads, pipeline_archive, ae_stats
+from settings import get_qualify_bar
 
 # Enriched leads scoring AT OR BELOW this are "Tier 4" — held back from AEs until
 # the scoring model is good enough to lower the bar. Allocation and the swipe
@@ -69,15 +70,18 @@ def get_pending_leads(ae_username):
     """Fetches this AE's unprocessed leads, best score first. Not cached: the
     swipe page holds the result in a session queue (the real cache) and only
     calls this when that queue is empty."""
+    bar = get_qualify_bar()
     with engine.connect() as conn:
         query = (
             select(sales_leads)
             .where(
                 (sales_leads.c.status == 'ready_for_swipe')
                 & (sales_leads.c.assigned_ae_username == ae_username)
-                & (sales_leads.c.confidence_score > TIER_THRESHOLD)  # never surface Tier 4
+                & (sales_leads.c.lead_score >= bar)          # the fit bar (admin slider)
             )
-            .order_by(sales_leads.c.confidence_score.desc())
+            # Best fit first; confidence in the web data breaks ties.
+            .order_by(sales_leads.c.lead_score.desc(),
+                      sales_leads.c.confidence_score.desc())
         )
         return [dict(row) for row in conn.execute(query).mappings().fetchall()]
 
@@ -87,8 +91,9 @@ def get_pending_leads(ae_username):
 # ==========================================
 def assign_leads_to_ae(username, num_leads):
     print(f"Assigning {num_leads} leads to {username}...")
+    bar = get_qualify_bar()
     with engine.begin() as connection:
-        # We use a subquery to grab the best unassigned leads
+        # Grab the best-fit unassigned leads that clear the qualification bar.
         assign_query = text("""
             UPDATE sales_leads
             SET assigned_ae_username = :username,
@@ -96,8 +101,8 @@ def assign_leads_to_ae(username, num_leads):
             WHERE id IN (
                 SELECT id FROM sales_leads
                 WHERE status = 'ready_for_swipe' AND assigned_ae_username IS NULL
-                  AND confidence_score > :threshold
-                ORDER BY confidence_score DESC
+                  AND lead_score >= :bar
+                ORDER BY lead_score DESC, confidence_score DESC
                 LIMIT :limit
             )
         """)
@@ -106,7 +111,7 @@ def assign_leads_to_ae(username, num_leads):
             "username": username,
             "now": datetime.utcnow(),
             "limit": num_leads,
-            "threshold": TIER_THRESHOLD,
+            "bar": bar,
         })
 
         return result.rowcount

@@ -6,6 +6,7 @@ banner, chips and metric tiles. No DB or page-specific state.
 """
 import streamlit as st
 
+from scoring import account_tier
 from sic_data import get_sic_lookup
 
 
@@ -17,20 +18,20 @@ def fmt_money(v):
 
 
 def _size_chip(account_type):
-    """(label, chip-class) for the company-size tag. Small/Medium are the target
-    market (green); micro amber; larger neutral; dormant red."""
+    """(label, chip-class) for the company-size tag, using the scorer's shared
+    account_tier so the card and the score always agree (small/medium = target
+    market, green; micro amber; larger neutral; dormant red)."""
     t = (account_type or "").lower()
     if not t:
         return ("Size n/a", "")
     if "dormant" in t:
         return ("Dormant", "no")
-    if "micro" in t:
+    tier = account_tier(account_type)           # micro / small / large / unknown
+    if tier == "micro":
         return ("Micro", "warn")
-    if "small" in t:
-        return ("Small", "ok")
-    if "medium" in t:
-        return ("Medium", "ok")
-    if "full" in t or "group" in t or "large" in t:
+    if tier == "small":
+        return ("Medium", "ok") if "medium" in t else ("Small", "ok")
+    if tier == "large":
         return ("Large", "")
     return (account_type.title(), "")
 

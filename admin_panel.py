@@ -3,14 +3,18 @@ import pandas as pd
 from sqlalchemy import text
 
 from sourcing import run_sourcing_pipeline
-from enrichment import run_enrichment_pipeline
-from leads import clear_all_data, clear_pipeline_data, assign_leads_to_ae, TIER_THRESHOLD
-from settings import get_qualify_percent, set_qualify_percent, qualify_percent_to_bar
+from pipeline import run_enrichment_pipeline
+from leads import clear_all_data, clear_pipeline_data, assign_leads_to_ae
+from settings import (
+    get_qualify_percent, set_qualify_percent, qualify_percent_to_bar, get_qualify_bar,
+)
 
 
 def _save_qualify_bar():
-    """Persist the qualification slider whenever it moves (on_change callback)."""
+    """Persist the qualification slider when it moves, and refresh the cached
+    pipeline metrics so they reflect the new bar (on_change callback)."""
     set_qualify_percent(st.session_state.qualify_slider)
+    _get_pipeline_stats.clear()
 
 
 # ==========================================
@@ -28,38 +32,39 @@ def _get_user_list(_engine):
 
 @st.cache_data(ttl=120)
 def _get_pipeline_stats(_engine):
-    """All Pipeline Health counts in one round-trip. Tier 4 = enriched leads
-    scoring at/below the threshold; Tier 3+ is everything else."""
+    """All Pipeline Health counts in one round-trip. 'Screened out' = leads the
+    staged pipeline eliminated; 'Qualified' = ready-to-swipe leads that clear the
+    current fit bar (the admin slider)."""
+    bar = get_qualify_bar()
     query = text("""
         SELECT
             COUNT(*) AS total,
-            COUNT(*) FILTER (
-                WHERE status <> 'sourced' AND confidence_score <= :threshold
-            ) AS tier4,
+            COUNT(*) FILTER (WHERE status = 'screened_out') AS screened_out,
             COUNT(*) FILTER (WHERE status = 'sourced') AS awaiting_enrichment,
             COUNT(*) FILTER (
+                WHERE status = 'ready_for_swipe' AND lead_score >= :bar
+            ) AS qualified,
+            COUNT(*) FILTER (
                 WHERE status = 'ready_for_swipe'
-                  AND assigned_ae_username IS NULL
-                  AND confidence_score > :threshold
+                  AND assigned_ae_username IS NULL AND lead_score >= :bar
             ) AS awaiting_allocation,
-            AVG(confidence_score) FILTER (
-                WHERE status <> 'sourced' AND confidence_score > :threshold
-            ) AS avg_tier3plus
+            AVG(lead_score) FILTER (
+                WHERE status = 'ready_for_swipe' AND lead_score >= :bar
+            ) AS avg_qualified
         FROM sales_leads
     """)
     with _engine.connect() as conn:
-        row = conn.execute(query, {"threshold": TIER_THRESHOLD}).mappings().fetchone()
+        row = conn.execute(query, {"bar": bar}).mappings().fetchone()
 
     stats = dict(row) if row else {}
-    total = stats.get('total') or 0
-    tier4 = stats.get('tier4') or 0
     return {
-        "total": total,
-        "tier4": tier4,
-        "tier3plus": total - tier4,
+        "total": stats.get('total') or 0,
+        "screened_out": stats.get('screened_out') or 0,
         "awaiting_enrichment": stats.get('awaiting_enrichment') or 0,
+        "qualified": stats.get('qualified') or 0,
         "awaiting_allocation": stats.get('awaiting_allocation') or 0,
-        "avg_tier3plus": float(stats.get('avg_tier3plus') or 0),
+        "avg_qualified": float(stats.get('avg_qualified') or 0),
+        "bar": bar,
     }
 
 
@@ -130,12 +135,12 @@ def render_dashboard(engine):
 
     stats = _get_pipeline_stats(engine)
 
-    # --- TIER 4 QUICK PANEL ---
+    # --- SCREENED-OUT QUICK PANEL ---
     with st.container(border=True):
         st.metric(
-            "🗂️ Tier 4 Leads (held back from AEs)", stats['tier4'],
-            help=(f"Enriched leads scoring ≤ {TIER_THRESHOLD}%. Not sent to AEs. "
-                  "Lower the threshold as the model improves to release more."),
+            "🗂️ Screened-out leads (eliminated by the pipeline)", stats['screened_out'],
+            help="Leads the staged pipeline judged below the qualification bar and set "
+                 "to 'screened_out'. Kept in the database for review/training, not sent to AEs.",
         )
 
     st.divider()
@@ -232,7 +237,7 @@ def render_dashboard(engine):
 
     user_list = _get_user_list(engine)
 
-    st.caption(f"Tier 3+ leads awaiting allocation: **{stats['awaiting_allocation']}**")
+    st.caption(f"Qualified leads awaiting allocation: **{stats['awaiting_allocation']}**")
 
     _allocation_controls(user_list, stats['awaiting_allocation'])
 
@@ -241,17 +246,17 @@ def render_dashboard(engine):
     # --- SECTION 2: LIVE METRICS ---
     st.markdown("### 📊 Pipeline Health")
     st.caption(
-        f"Tier threshold: leads scoring **above {TIER_THRESHOLD}%** are sent to AEs. "
-        "Lower it as the model improves."
+        f"Leads with a **lead score ≥ {stats['bar']}/100** (the qualification bar) reach "
+        "AEs, best fit first. Adjust the bar with the slider above."
     )
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total Leads (incl. Tier 4)", stats['total'])
-    c2.metric("Tier 3+ Leads", stats['tier3plus'])
+    c1.metric("Total Leads", stats['total'])
+    c2.metric("Qualified Leads", stats['qualified'])
     c3.metric("Awaiting Enrichment", stats['awaiting_enrichment'])
 
     c4, c5 = st.columns(2)
-    c4.metric("Avg Tier 3+ Score", f"{stats['avg_tier3plus']:.0f}%")
+    c4.metric("Avg Lead Score (qualified)", f"{stats['avg_qualified']:.0f}/100")
     c5.metric("Awaiting Allocation", stats['awaiting_allocation'])
 
     st.markdown("<br>", unsafe_allow_html=True)
