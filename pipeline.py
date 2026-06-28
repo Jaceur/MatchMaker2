@@ -134,6 +134,8 @@ def run_pipeline(limit=None, progress_callback=None):
             "turnover": fields.get("turnover"),
             "cash_at_bank": fields.get("cash_at_bank"),
             "foreign_exchange": fields.get("foreign_exchange"),
+            "trade_debtors": fields.get("trade_debtors"),
+            "trade_creditors": fields.get("trade_creditors"),
             "import_activity": fields.get("import_activity"),
             "export_activity": fields.get("export_activity"),
             "director_change_recent": fields.get("director_change_recent"),

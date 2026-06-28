@@ -249,6 +249,8 @@ screening_log = Table(
     Column('turnover', BigInteger),
     Column('cash_at_bank', BigInteger),
     Column('foreign_exchange', BigInteger),
+    Column('trade_debtors', BigInteger),
+    Column('trade_creditors', BigInteger),
     Column('import_activity', Boolean),
     Column('export_activity', Boolean),
     Column('director_change_recent', Boolean),
@@ -296,6 +298,18 @@ try:
                 ))
 except Exception as _e:
     print(f"Schema migration (trade/lead_score columns) skipped: {_e}")
+
+# screening_log gained trade_debtors / trade_creditors once they became scoring
+# inputs; create_all won't add columns to the already-created table, so do it
+# idempotently here.
+try:
+    with engine.begin() as _conn:
+        for _col in ("trade_debtors", "trade_creditors"):
+            _conn.execute(text(
+                f"ALTER TABLE screening_log ADD COLUMN IF NOT EXISTS {_col} BIGINT"
+            ))
+except Exception as _e:
+    print(f"screening_log migration skipped: {_e}")
 
 # Indexes for the columns the latency-sensitive queries filter and sort by: the
 # swipe queue (get_pending_leads) and lead allocation (assign_leads_to_ae) both
