@@ -5,21 +5,23 @@ THE ML SEAM. Everything else calls `score_lead(features)` and treats it as a
 black box. Today the body is a set of hand-written rules; once we have enough
 labelled data, swap that body for a trained model WITHOUT touching any caller.
 
-`lead_score` is about SALES FIT only. How sure we are about the website/LinkedIn
-data is a SEPARATE number (`confidence_score`) and is NOT part of this score.
+`lead_score` is about SALES FIT only. Confidence in the website/LinkedIn data is
+a SEPARATE number (`confidence_score`) and is NOT part of this score.
 
 How the rules work
 ------------------
-Each KEY financial signal scores `PASS_ALONE` (50) when it hits its minimum — so
-ANY ONE of these, on its own, clears the default 50 bar:
+Each signal is turned into a "strength" between 0 and ~0.9 by a saturating curve:
+hitting its MINIMUM earns ~0.5 (so that signal ALONE lands at ~50, the default
+bar), and bigger magnitudes above the minimum add only a little more (diminishing
+returns — 50 staff barely beats 10). The strengths then COMBINE with diminishing
+returns too: each signal closes part of the remaining gap to 100, so
 
-    turnover >= £1m   |   cash >= £1m   |   employees >= 8   |
-    trade debtors >= £500k   |   trade creditors >= £500k   |   |FX| > £100k
+    score = 100 * (1 - (1-s1)(1-s2)(1-s3)...)
 
-Below a minimum a signal scores proportionally less, and all signals are ADDED
-UP (then clamped to 100). So two "half-strength" signals still pass (e.g. turnover
-£500k + cash £200k), while genuinely weak ones don't (e.g. 4 staff + £20k cash).
-The account-type category is only a small nudge and never caps a company.
+That gives exactly the shape asked for: any one minimum passes; a strong lead
+(several big signals) climbs toward ~99 without everyone clamping at a flat 100;
+and weak leads stay well below 50. Thresholds are named constants below — easy to
+tune. Dormant companies are disqualified outright.
 """
 from dataclasses import dataclass
 from typing import Optional, Mapping
@@ -39,16 +41,15 @@ class LeadFeatures:
     director_change_recent: bool = False
 
 
-# A signal at its minimum scores this — enough to clear the default 50 bar alone.
-PASS_ALONE = 50
-
-# The minimums (the levels that score PASS_ALONE). Easy to tune.
+# Minimums — the level at which a signal earns the pass (~0.5 strength = ~50 alone).
 TURNOVER_MIN = 1_000_000
 CASH_MIN = 1_000_000
-EMPLOYEES_MIN = 8                  # 8+ counts (your "10" with a little headroom)
+EMPLOYEES_MIN = 10
 BALANCE_MIN = 500_000              # trade debtors / creditors
 FX_MIN = 100_000                   # |foreign exchange|
-SEGMENT_TURNOVER_CAP = 30_000_000  # over this is out of the SMB sweet spot (kept, scored low)
+SEGMENT_TURNOVER_CAP = 30_000_000  # over this is out of the SMB segment (kept, scored low)
+
+PASS = 0.50    # a signal at its minimum -> this strength -> ~50 on its own (the default bar)
 
 
 def account_tier(account_type):
@@ -65,118 +66,140 @@ def account_tier(account_type):
     return "unknown"
 
 
-def _cash_points(cash):
-    """Cash at bank — liquidity / banking fit. >= £1m passes on its own."""
-    if cash is None:
-        return 0
-    if cash >= CASH_MIN:
-        return PASS_ALONE
-    if cash >= 500_000:
-        return 38
-    if cash >= 200_000:
-        return 25
-    if cash >= 100_000:
-        return 15
-    if cash >= 25_000:
-        return 8
-    if cash >= 1_000:
-        return 3
-    return 0
+def _cash_strength(c):
+    """Cash at bank. Hits the pass at £1m, then magnitude adds diminishing more."""
+    if c is None:
+        return 0.0
+    if c >= 20_000_000:
+        return 0.90
+    if c >= 5_000_000:
+        return 0.80
+    if c >= CASH_MIN:
+        return 0.55
+    if c >= 500_000:
+        return 0.30
+    if c >= 200_000:
+        return 0.18
+    if c >= 100_000:
+        return 0.10
+    if c >= 25_000:
+        return 0.05
+    if c >= 1_000:
+        return 0.02
+    return 0.0
 
 
-def _turnover_points(turnover):
-    """Segment fit. >= £1m passes on its own; over £30m is kept but scored low.
-    Turnover often isn't filed — that just means 0 here, and the lead leans on its
-    other signals (cash, employees, debtors...) instead."""
-    if turnover is None:
-        return 0
-    if turnover > SEGMENT_TURNOVER_CAP:
-        return 10
-    if turnover >= TURNOVER_MIN:
-        return PASS_ALONE
-    if turnover >= 500_000:
-        return 25
-    if turnover >= 250_000:
-        return 15
-    if turnover >= 100_000:
-        return 8
-    if turnover >= 1:
-        return 3
-    return 0
+def _turnover_strength(t):
+    """Turnover. Passes at £1m within the £30m segment; over £30m is kept but
+    weak (out of segment). Not filed -> 0 (the lead leans on its other signals)."""
+    if t is None:
+        return 0.0
+    if t > SEGMENT_TURNOVER_CAP:
+        return 0.10
+    if t >= 10_000_000:
+        return 0.70
+    if t >= 5_000_000:
+        return 0.62
+    if t >= TURNOVER_MIN:
+        return PASS
+    if t >= 500_000:
+        return 0.30
+    if t >= 250_000:
+        return 0.18
+    if t >= 100_000:
+        return 0.10
+    if t >= 1:
+        return 0.04
+    return 0.0
 
 
-def _employee_points(e):
-    """Headcount — a strong, account-type-independent signal. 8+ employees passes
-    on its own, even for a company that filed as a micro-entity."""
+def _employee_strength(e):
+    """Headcount — saturates fast: 10 passes, and 50 only edges a little higher."""
     if e is None:
-        return 0
+        return 0.0
+    if e >= 100:
+        return 0.62
+    if e >= 50:
+        return 0.58
+    if e >= 30:
+        return 0.54
+    if e >= 20:
+        return 0.51
     if e >= EMPLOYEES_MIN:
-        return PASS_ALONE
+        return PASS
+    if e >= 8:
+        return 0.40
     if e >= 5:
-        return 32
+        return 0.26
     if e >= 3:
-        return 18
+        return 0.14
     if e >= 1:
-        return 6
-    return 0
+        return 0.05
+    return 0.0
 
 
-def _balance_points(value):
-    """Trade debtors / creditors — a proxy for trading volume. >= £500k passes."""
-    if value is None:
-        return 0
-    if value >= BALANCE_MIN:
-        return PASS_ALONE
-    if value >= 250_000:
-        return 28
-    if value >= 100_000:
-        return 14
-    if value >= 1:
-        return 4
-    return 0
+def _balance_strength(v):
+    """Trade debtors / creditors. Passes at £500k, then diminishing magnitude."""
+    if v is None:
+        return 0.0
+    if v >= 5_000_000:
+        return 0.78
+    if v >= 1_000_000:
+        return 0.62
+    if v >= BALANCE_MIN:
+        return PASS
+    if v >= 250_000:
+        return 0.30
+    if v >= 100_000:
+        return 0.16
+    if v >= 1:
+        return 0.05
+    return 0.0
 
 
-def _fx_points(import_activity, export_activity, foreign_exchange):
-    """FX exposure = a need for multi-currency / FX. |FX| > £100k passes on its
-    own; a smaller FX line plus import/export flags add a little."""
-    pts = 0
-    if foreign_exchange is not None and abs(foreign_exchange) > FX_MIN:
-        pts += PASS_ALONE
-    elif foreign_exchange:
-        pts += 6
-    if import_activity:
-        pts += 3
-    if export_activity:
-        pts += 3
-    return pts
+def _fx_strength(import_activity, export_activity, foreign_exchange):
+    """FX exposure. |FX| over £100k passes, and a really large FX line adds more;
+    import/export flags (HMRC) add a small amount on top."""
+    line = 0.0
+    if foreign_exchange is not None:
+        a = abs(foreign_exchange)
+        if a >= 5_000_000:
+            line = 0.90
+        elif a >= 1_000_000:
+            line = 0.70
+        elif a >= 500_000:
+            line = 0.58
+        elif a > FX_MIN:
+            line = PASS
+        elif a > 0:
+            line = 0.08
+    flags = 0.06 * (bool(import_activity) + bool(export_activity))
+    return min(line + flags, 0.92)
 
 
-def _account_size_points(account_type):
-    """A small nudge from the account-size category — never enough to pass on its
-    own, never enough to cap a company. Financials carry the weight."""
-    return {"small": 12, "micro": 6, "large": 4}.get(account_tier(account_type), 0)
-
-
-def _activity_points(director_change_recent):
-    return 8 if director_change_recent else 0
+def _activity_strength(director_change_recent):
+    return 0.08 if director_change_recent else 0.0
 
 
 def _heuristic_score(f: LeadFeatures) -> int:
-    """Today's rule-based score — the part a trained model will replace. Add up
-    every signal, clamp to 0-100. Dormant companies are disqualified."""
+    """Today's rule-based score — the part a trained model will replace. Combine
+    every signal's strength with diminishing returns (each closes part of the gap
+    to 100) and scale to 0-100. Dormant companies are disqualified."""
     if "dormant" in (f.account_type or "").lower():
         return 0
-    score = (
-        _cash_points(f.cash_at_bank)
-        + _turnover_points(f.turnover)
-        + _employee_points(f.employee_count)
-        + _balance_points(f.trade_debtors)
-        + _balance_points(f.trade_creditors)
-        + _fx_points(f.import_activity, f.export_activity, f.foreign_exchange)
-        + _account_size_points(f.account_type)
-        + _activity_points(f.director_change_recent)
+    strengths = (
+        _cash_strength(f.cash_at_bank),
+        _turnover_strength(f.turnover),
+        _employee_strength(f.employee_count),
+        _balance_strength(f.trade_debtors),
+        _balance_strength(f.trade_creditors),
+        _fx_strength(f.import_activity, f.export_activity, f.foreign_exchange),
+        _activity_strength(f.director_change_recent),
     )
-    return max(0, min(score, 100))
+    gap = 1.0
+    for s in strengths:
+        gap *= (1.0 - s)
+    return round(100 * (1.0 - gap))
 
 
 def score_lead(features: LeadFeatures) -> int:
@@ -195,12 +218,12 @@ def best_possible_score(f: LeadFeatures) -> int:
         import_activity=f.import_activity,
         export_activity=f.export_activity,
         director_change_recent=f.director_change_recent,
-        cash_at_bank=f.cash_at_bank if f.cash_at_bank is not None else CASH_MIN,
-        turnover=f.turnover if f.turnover is not None else TURNOVER_MIN,
-        foreign_exchange=f.foreign_exchange if f.foreign_exchange is not None else -(FX_MIN + 1),
-        employee_count=f.employee_count if f.employee_count is not None else EMPLOYEES_MIN,
-        trade_debtors=f.trade_debtors if f.trade_debtors is not None else BALANCE_MIN,
-        trade_creditors=f.trade_creditors if f.trade_creditors is not None else BALANCE_MIN,
+        cash_at_bank=f.cash_at_bank if f.cash_at_bank is not None else 5_000_000,
+        turnover=f.turnover if f.turnover is not None else 5_000_000,
+        foreign_exchange=f.foreign_exchange if f.foreign_exchange is not None else -1_000_000,
+        employee_count=f.employee_count if f.employee_count is not None else 50,
+        trade_debtors=f.trade_debtors if f.trade_debtors is not None else 1_000_000,
+        trade_creditors=f.trade_creditors if f.trade_creditors is not None else 1_000_000,
     )
     return _heuristic_score(best)
 

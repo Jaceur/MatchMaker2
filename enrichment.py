@@ -1,6 +1,7 @@
 """Enrichment: scrape + score each sourced lead's website and LinkedIn, plus a
 couple of Companies House signals (account category, recent director change)."""
 import re
+import time
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urljoin
 
@@ -357,6 +358,32 @@ def clean_company_name(raw):
     return strict, clean
 
 
+# DuckDuckGo has no API key and throttles automated searches, so the web step
+# paces itself and retries instead of just failing. Tune these if it's still
+# timing out a lot (raise DDG_PACE) or too slow (lower it).
+DDG_RETRIES = 2        # extra attempts after a failure
+DDG_BACKOFF = 5        # base seconds between retries (grows each attempt)
+DDG_PACE = 1.0         # gentle delay before each search to stay under the rate limit
+
+
+def _ddg_text(ddgs, query, max_results):
+    """ddgs.text() with pacing + retry/backoff. DuckDuckGo drops connections under
+    a fast batch of searches, so we space requests out and, on a failure, pause
+    and retry before giving up (returning [] — the lead just gets no web link)."""
+    time.sleep(DDG_PACE)
+    for attempt in range(DDG_RETRIES + 1):
+        try:
+            return list(ddgs.text(query, max_results=max_results))
+        except Exception as e:
+            if attempt < DDG_RETRIES:
+                wait = DDG_BACKOFF * (attempt + 1)
+                print(f"   DDG search throttled ({e}); waiting {wait}s, retrying...")
+                time.sleep(wait)
+            else:
+                print(f"   DDG search gave up after {DDG_RETRIES + 1} tries: {e}")
+                return []
+
+
 def fetch_web_presence(company_name_clean, company_name_strict):
     """Search the web for the company's own website and LinkedIn /company/ page,
     score each, and combine them into one 0-100 confidence number. Returns the
@@ -375,7 +402,7 @@ def fetch_web_presence(company_name_clean, company_name_strict):
         with DDGS() as ddgs:
             # --- Website lookup ---
             try:
-                results = list(ddgs.text(f'{company_name_clean} UK official website', max_results=3))
+                results = _ddg_text(ddgs, f'{company_name_clean} UK official website', max_results=3)
                 best_url = None
                 for result in results:
                     raw_link = result.get('href', '').lower()
@@ -394,7 +421,7 @@ def fetch_web_presence(company_name_clean, company_name_strict):
                 strict_query = f'{company_name_strict} UK site:linkedin.com/company/'
                 # LinkedIn /company/ pages are sparsely indexed by DDG, so pull a
                 # deeper result set — the scorer still gates quality below.
-                results = list(ddgs.text(strict_query, max_results=8))
+                results = _ddg_text(ddgs, strict_query, max_results=8)
                 best_li_url = None
                 for result in results:
                     raw_link = result.get('href', '')
