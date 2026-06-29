@@ -40,9 +40,13 @@ HOLDOUT_RATE = 0.05
 
 
 def _screened(fields, reason):
-    """Mark a lead eliminated — kept in the DB with the reason, never deleted."""
+    """Mark a lead eliminated — kept in the DB with the reason, never deleted. A
+    screened-out lead is also unassigned: it must not sit in an AE's pile or count
+    as 'assigned' to anyone."""
     fields["status"] = "screened_out"
     fields["screen_reason"] = reason
+    fields["assigned_ae_username"] = None
+    fields["assigned_date"] = None
     print(f" -> SCREENED OUT — {reason}")
     return fields
 

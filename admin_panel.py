@@ -4,7 +4,7 @@ from sqlalchemy import text
 
 from sourcing import run_sourcing_pipeline
 from pipeline import run_enrichment_pipeline
-from leads import clear_all_data, clear_pipeline_data, assign_leads_to_ae
+from leads import clear_all_data, clear_pipeline_data, assign_leads_to_ae, top_up_allocation
 from settings import (
     get_qualify_percent, set_qualify_percent, qualify_percent_to_bar, get_qualify_bar,
 )
@@ -70,19 +70,26 @@ def _get_pipeline_stats(_engine):
 
 @st.cache_data(ttl=120)
 def _get_ae_performance(_engine):
+    """Per-AE workload. 'Total Assigned' counts only LIVE leads (still-to-swipe +
+    processed); screened-out / un-enriched leads don't count and shouldn't carry a
+    name. Pending = still to swipe; Approved = sent to My Pipeline; Passed = swiped
+    away (archived)."""
     query = text("""
         SELECT
             u.username AS "AE Name",
-            COUNT(s.id) AS "Total Assigned",
-            SUM(CASE WHEN s.status IN ('approved', 'archived') THEN 1 ELSE 0 END) AS "Processed",
-            SUM(CASE WHEN s.status = 'ready_for_swipe' THEN 1 ELSE 0 END) AS "Pending"
+            SUM(CASE WHEN s.status IN ('ready_for_swipe','approved','archived') THEN 1 ELSE 0 END) AS "Total Assigned",
+            SUM(CASE WHEN s.status = 'ready_for_swipe' THEN 1 ELSE 0 END) AS "Pending",
+            SUM(CASE WHEN s.status = 'approved' THEN 1 ELSE 0 END) AS "Approved",
+            SUM(CASE WHEN s.status = 'archived' THEN 1 ELSE 0 END) AS "Passed"
         FROM users u
         LEFT JOIN sales_leads s ON u.username = s.assigned_ae_username
         GROUP BY u.username
+        ORDER BY "Pending" DESC
     """)
     with _engine.connect() as conn:
         df = pd.read_sql(query, conn)
-    return df.fillna(0).astype({'Total Assigned': 'int', 'Processed': 'int', 'Pending': 'int'})
+    cols = ['Total Assigned', 'Pending', 'Approved', 'Passed']
+    return df.fillna(0).astype({c: 'int' for c in cols})
 
 
 @st.cache_data(ttl=120)
@@ -240,6 +247,35 @@ def render_dashboard(engine):
     st.caption(f"Qualified leads awaiting allocation: **{stats['awaiting_allocation']}**")
 
     _allocation_controls(user_list, stats['awaiting_allocation'])
+
+    st.divider()
+
+    # --- SECTION 1.6: TEAM TOP-UP ALLOCATION ---
+    st.markdown("### 🔝 Team Top-Up Allocation")
+    st.caption(
+        "Fill every AE (and admin) back up to a target number of **pending** leads "
+        "— each person receives (target − their current pending). Leads are shared "
+        "out best-fit first and **weighted by leaderboard standing**, so higher-ranked "
+        "reps get a higher average lead score (admins count as top-ranked). "
+        f"Qualified pool available: **{stats['awaiting_allocation']}**."
+    )
+    colt1, colt2 = st.columns([1, 1])
+    with colt1:
+        topup_target = st.number_input(
+            "Target pending per person", min_value=1, max_value=100, value=20,
+        )
+    with colt2:
+        st.markdown("<br>", unsafe_allow_html=True)  # aligns button with the input
+        if st.button("⬆️ Top up the team", type="primary", use_container_width=True):
+            with st.spinner("Distributing leads across the team..."):
+                summary = top_up_allocation(int(topup_target))
+            _clear_admin_caches()
+            if summary:
+                total = sum(r["Assigned"] for r in summary)
+                st.success(f"Topped up {len(summary)} people with {total} leads.")
+                st.dataframe(pd.DataFrame(summary), hide_index=True, use_container_width=True)
+            else:
+                st.info("Everyone is already at the target, or the qualified pool is empty.")
 
     st.divider()
 

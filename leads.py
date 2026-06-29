@@ -6,7 +6,7 @@ are shared by the UI pages and the CLI.
 from datetime import datetime
 
 import pandas as pd
-from sqlalchemy import select, delete, insert, text
+from sqlalchemy import select, delete, insert, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
@@ -115,6 +115,140 @@ def assign_leads_to_ae(username, num_leads):
         })
 
         return result.rowcount
+
+
+# ==========================================
+# TEAM TOP-UP ALLOCATION
+# ==========================================
+# Each team member should hold a swipe pile of about this many PENDING leads.
+PENDING_TARGET = 20
+# Lowest rank weight: the bottom of the leaderboard pulls leads at this fraction
+# of the top's pull. 1.0 means "ignore the leaderboard" (everyone equal); lower
+# widens the gap between the best and worst rep's average lead score. 0.78 gives
+# roughly a 10-point spread top-to-bottom (e.g. best rep ~70, worst ~60).
+TOPUP_W_MIN = 0.78
+
+
+def release_dead_assignments(conn):
+    """Strip the AE name off any lead that is no longer live and workable —
+    anything not ready_for_swipe / approved / archived (e.g. a lead the pipeline
+    later screened out). Such a lead must not sit in an AE's pile or count as
+    'assigned'. Uses the caller's connection; returns how many were released."""
+    result = conn.execute(
+        update(sales_leads)
+        .where(
+            sales_leads.c.assigned_ae_username.isnot(None)
+            & sales_leads.c.status.notin_(["ready_for_swipe", "approved", "archived"])
+        )
+        .values(assigned_ae_username=None, assigned_date=None)
+    )
+    return result.rowcount
+
+
+def _ae_rank_weights():
+    """Map every team member to a draft weight in [TOPUP_W_MIN .. 1.0] by their
+    leaderboard standing: top of the board -> 1.0, bottom -> TOPUP_W_MIN, spaced
+    evenly by rank. Admins are always treated as top-ranked (1.0)."""
+    from leaderboard import compute_points  # local import keeps leads.py UI-free at load
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT u.username, u.role,
+                   COALESCE(s.urls_added, 0)   AS urls_added,
+                   COALESCE(s.leads_swiped, 0) AS leads_swiped,
+                   COALESCE(s.leads_saved, 0)  AS leads_saved
+            FROM users u LEFT JOIN ae_stats s ON s.username = u.username
+        """)).mappings().fetchall()
+
+    aes = [r for r in rows if r["role"] != "admin"]
+    ranked = sorted(
+        aes,
+        key=lambda r: compute_points(r["urls_added"], r["leads_swiped"], r["leads_saved"]),
+        reverse=True,
+    )
+    weights = {}
+    n = len(ranked)
+    for i, r in enumerate(ranked):
+        frac = 1.0 if n <= 1 else 1 - i / (n - 1)      # 1.0 at the top, 0.0 at the bottom
+        weights[r["username"]] = TOPUP_W_MIN + (1 - TOPUP_W_MIN) * frac
+    for r in rows:
+        if r["role"] == "admin":
+            weights[r["username"]] = 1.0                 # admin = always top-rated
+    return weights
+
+
+def top_up_allocation(target=PENDING_TARGET, commit=True):
+    """Top every team member back up to `target` PENDING leads from the unassigned
+    qualified pool. Each person needs (target - their current pending); leads are
+    drafted best-score-first, weighted by leaderboard standing so higher-ranked
+    reps get higher-scoring leads on average, while everyone is still filled to
+    target as far as the pool stretches. With commit=False it only projects the
+    result (no writes). Returns a per-person summary (AE, Assigned, Avg Score,
+    Now Pending), best-ranked first."""
+    bar = get_qualify_bar()
+    weights = _ae_rank_weights()
+    now = datetime.utcnow()
+
+    ctx = engine.begin() if commit else engine.connect()
+    with ctx as conn:
+        if commit:
+            release_dead_assignments(conn)   # reclaim names off screened-out leads first
+
+        pending = {
+            r["ae"]: r["n"] for r in conn.execute(text("""
+                SELECT assigned_ae_username AS ae, COUNT(*) AS n
+                FROM sales_leads
+                WHERE status = 'ready_for_swipe' AND assigned_ae_username IS NOT NULL
+                GROUP BY assigned_ae_username
+            """)).mappings().fetchall()
+        }
+
+        need = {ae: target - pending.get(ae, 0)
+                for ae in weights if target - pending.get(ae, 0) > 0}
+        if not need:
+            return []
+
+        pool = conn.execute(text("""
+            SELECT id, lead_score FROM sales_leads
+            WHERE status = 'ready_for_swipe' AND assigned_ae_username IS NULL
+              AND lead_score >= :bar
+            ORDER BY lead_score DESC
+        """), {"bar": bar}).mappings().fetchall()
+
+        # Weighted draft: each lead (highest score first) goes to the still-hungry
+        # rep with the highest (weight - fraction already filled), so top-ranked
+        # reps take the better leads while everyone fills toward target.
+        assigned = {ae: [] for ae in need}
+        remaining = dict(need)
+        for lead in pool:
+            if not remaining:
+                break
+            ae = max(remaining, key=lambda a: weights[a] - len(assigned[a]) / need[a])
+            assigned[ae].append(lead)
+            remaining[ae] -= 1
+            if remaining[ae] == 0:
+                del remaining[ae]
+
+        if commit:
+            for ae, leads in assigned.items():
+                ids = [l["id"] for l in leads]
+                if ids:
+                    conn.execute(
+                        update(sales_leads).where(sales_leads.c.id.in_(ids))
+                        .values(assigned_ae_username=ae, assigned_date=now)
+                    )
+
+    summary = []
+    for ae in sorted(assigned, key=lambda a: weights[a], reverse=True):
+        scores = [l["lead_score"] for l in assigned[ae]]
+        if not scores:
+            continue
+        summary.append({
+            "AE": ae,
+            "Assigned": len(scores),
+            "Avg Score": round(sum(scores) / len(scores)),
+            "Now Pending": pending.get(ae, 0) + len(scores),
+        })
+    return summary
 
 
 def clear_database():
