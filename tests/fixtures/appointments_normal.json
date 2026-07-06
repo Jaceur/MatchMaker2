@@ -1,0 +1,7 @@
+{
+  "items": [
+    {"appointed_on": "2026-06-30", "appointed_to": {"company_number": "16000001", "company_name": "GLOBAL TRADE WIDGETS LTD", "company_status": "active"}},
+    {"appointed_on": "2015-04-01", "appointed_to": {"company_number": "09500001", "company_name": "ESTABLISHED TRADING LTD", "company_status": "active"}},
+    {"appointed_on": "2019-09-12", "appointed_to": {"company_number": "12100001", "company_name": "SIDE VENTURE LTD", "company_status": "dissolved"}}
+  ]
+}

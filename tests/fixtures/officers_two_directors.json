@@ -1,0 +1,58 @@
+{
+  "items": [
+    {
+      "name": "SMITH, Jane",
+      "officer_role": "director",
+      "appointed_on": "2026-06-30",
+      "address": {
+        "address_line_1": "12 Commercial Wharf Road",
+        "locality": "Manchester",
+        "country": "England"
+      },
+      "links": {
+        "officer": {
+          "appointments": "/officers/aBcD123eFgH/appointments"
+        }
+      }
+    },
+    {
+      "name": "MULLER, Hans",
+      "officer_role": "director",
+      "appointed_on": "2026-06-30",
+      "address": {
+        "address_line_1": "Hauptstrasse 1",
+        "locality": "Berlin",
+        "country": "Germany"
+      },
+      "links": {
+        "officer": {
+          "appointments": "/officers/xYz789QrStU/appointments"
+        }
+      }
+    },
+    {
+      "name": "GONE, Early",
+      "officer_role": "director",
+      "appointed_on": "2026-06-30",
+      "resigned_on": "2026-07-02",
+      "address": {
+        "locality": "London",
+        "country": "England"
+      },
+      "links": {
+        "officer": {
+          "appointments": "/officers/resigned001/appointments"
+        }
+      }
+    },
+    {
+      "name": "FORMATIONS SECRETARIES LIMITED",
+      "officer_role": "secretary",
+      "appointed_on": "2026-06-30",
+      "address": {
+        "locality": "London",
+        "country": "England"
+      }
+    }
+  ]
+}

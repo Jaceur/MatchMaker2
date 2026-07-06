@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "kind": "corporate-entity-person-with-significant-control",
+      "name": "Muttergesellschaft Holding GmbH",
+      "identification": {
+        "country_registered": "Germany",
+        "legal_form": "gmbh"
+      },
+      "address": {
+        "address_line_1": "Hauptstrasse 1",
+        "locality": "Berlin",
+        "country": "Germany"
+      },
+      "natures_of_control": ["ownership-of-shares-75-to-100-percent"]
+    }
+  ]
+}

@@ -7,7 +7,7 @@ Usage:
     python enrich_local.py 250      # enrich up to 250
     python enrich_local.py all      # enrich every 'sourced' lead
 
-Needs .streamlit/secrets.toml locally with the same gcp_service_account,
+Needs .streamlit/secrets.toml locally with the same [supabase] connection,
 DB_PASSWORD and CH_API_KEY the deployed app uses (already present here), and the
 project's dependencies installed:  pip install -r requirements.txt
 """

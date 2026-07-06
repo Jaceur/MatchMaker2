@@ -1,0 +1,29 @@
+{
+  "items": [
+    {
+      "type": "NEWINC",
+      "category": "incorporation",
+      "date": "2026-06-30",
+      "description": "incorporation-company",
+      "associated_filings": [
+        {
+          "type": "MODEL ARTICLES",
+          "description": "model-articles-adopted"
+        },
+        {
+          "type": "SH01",
+          "description": "statement-of-capital",
+          "date": "2026-06-30",
+          "description_values": {
+            "capital": [
+              {
+                "currency": "GBP",
+                "figure": "50,000"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

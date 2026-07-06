@@ -1,0 +1,14 @@
+{
+  "company_name": "PASSIVE PROPERTY SPV LTD",
+  "company_number": "16000002",
+  "company_status": "active",
+  "type": "ltd",
+  "date_of_creation": "2026-07-01",
+  "sic_codes": ["64209"],
+  "registered_office_address": {
+    "address_line_1": "Suite 4B, 71-75 Shelton Street",
+    "address_line_2": "Covent Garden",
+    "locality": "London",
+    "postal_code": "WC2H 9JQ"
+  }
+}

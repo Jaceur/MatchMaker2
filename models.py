@@ -6,8 +6,10 @@ whole schema is known.
 from datetime import datetime
 
 from sqlalchemy import (
-    Table, Column, Integer, BigInteger, String, Date, Boolean, DateTime, text,
+    Table, Column, Integer, BigInteger, String, Date, Boolean, DateTime, Numeric,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 from database import engine, metadata
 
@@ -263,9 +265,153 @@ screening_log = Table(
     Column('created_at', DateTime, default=datetime.utcnow),
 )
 
+# ==========================================
+# CH LEAD ENGINE ("High Quality New Incorps")
+# ==========================================
+# A separate subsystem that watches Companies House for NEWLY INCORPORATED
+# companies with high expected banking usage (FX, cross-border flows, real
+# capital). It has its own tables (all prefixed ch_) because it tracks a
+# different universe than sales_leads: thousands of brand-new companies per
+# day, most of which never become leads. A scored Tier 1/2 company can be
+# promoted into sales_leads from the "High Quality New Incorps" page.
+# All-new tables, so create_all builds them — no _ADDED_COLUMNS entries needed.
+
+# One row per company seen on the stream / backfill. company_number is the
+# natural key everywhere in this subsystem (same thing sales_leads calls crn).
+ch_companies = Table(
+    'ch_companies', metadata,
+    Column('company_number', String(20), primary_key=True),
+    Column('name', String(255)),
+    Column('date_of_creation', Date, index=True),
+    Column('status', String(50)),
+    Column('type', String(50)),
+    Column('sic_codes', String(255)),            # comma-joined, like sales_leads
+    Column('registered_address', JSONB),
+    Column('address_normalised', String(500)),
+    Column('first_seen_at', DateTime, default=datetime.utcnow),
+    Column('enriched_at', DateTime),
+    # PSC data can lag incorporation by days: when the PSC list is empty for a
+    # very young company we come back after this time instead of finalising.
+    Column('recheck_after', DateTime),
+)
+
+# Persons with significant control — the foreign-parent signal lives here.
+ch_psc = Table(
+    'ch_psc', metadata,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('company_number', String(20), index=True),
+    Column('kind', String(100)),
+    Column('name', String(255)),
+    Column('country', String(100)),
+    Column('raw', JSONB),
+)
+
+ch_officers = Table(
+    'ch_officers', metadata,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('company_number', String(20), index=True),
+    Column('officer_id', String(50)),
+    Column('name', String(255)),
+    Column('role', String(50)),
+    Column('correspondence_country', String(100)),
+    Column('prior_appointments', Integer),
+    Column('quality_flag', String(20)),          # 'quality' | 'spv_farm' | 'unknown'
+    Column('raw', JSONB),
+)
+
+# Statements of capital parsed from filings (NEWINC at incorporation, SH01 on a
+# later allotment). figure is NUMERIC because CH publishes decimals.
+ch_capital_statements = Table(
+    'ch_capital_statements', metadata,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('company_number', String(20), index=True),
+    Column('filing_type', String(20)),           # NEWINC | SH01 | ...
+    Column('currency', String(10)),
+    Column('figure', Numeric(18, 2)),
+    Column('filing_date', Date),
+    Column('raw', JSONB),
+)
+
+# Post-incorporation trigger events (SH01 fresh raise, MR01 debt financing)
+# spotted on the filings stream. These promote a company to Tier 1.
+ch_events = Table(
+    'ch_events', metadata,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('company_number', String(20), index=True),
+    Column('event_type', String(30)),            # sh01_raise | mr01_charge
+    Column('detail', JSONB),
+    Column('occurred_at', DateTime, default=datetime.utcnow),
+    Column('actioned', Boolean, default=False),
+)
+
+# One score row per company, with the full signal breakdown kept as JSONB so
+# weights can be re-tuned later without re-enriching anything.
+ch_scores = Table(
+    'ch_scores', metadata,
+    Column('company_number', String(20), primary_key=True),
+    Column('score', Integer),
+    Column('tier', Integer, index=True),
+    Column('breakdown', JSONB),
+    Column('scored_at', DateTime),
+)
+
+# The work queue between ingest (stream/backfill) and enrichment. A status
+# column on a table is plenty at ~3,000 incorporations/day — no broker needed.
+ch_queue = Table(
+    'ch_queue', metadata,
+    Column('company_number', String(20), primary_key=True),
+    Column('stage', String(20), default='new', index=True),   # new | scored | failed
+    Column('attempts', Integer, default=0),
+    Column('last_error', String(500)),
+    Column('updated_at', DateTime, default=datetime.utcnow),
+)
+
+# Last processed timepoint per stream, so a restarted listener resumes exactly
+# where it left off (no gaps, dupes handled by upserts).
+ch_stream_state = Table(
+    'ch_stream_state', metadata,
+    Column('stream', String(20), primary_key=True),           # companies | filings
+    Column('timepoint', BigInteger),
+    Column('updated_at', DateTime),
+)
+
+# Registered-office addresses used by formation agents (appearing on hundreds
+# of companies). Seeded from a hardcoded list; refreshed monthly from the CH
+# bulk snapshot via ch_hot_addresses.py.
+ch_hot_addresses = Table(
+    'ch_hot_addresses', metadata,
+    Column('address_normalised', String(500), primary_key=True),
+    Column('company_count', Integer),
+    Column('refreshed_at', DateTime),
+)
+
+# GDPR/PECR suppression list: companies (and thereby their directors) we must
+# not surface in digests or on the page.
+ch_suppression = Table(
+    'ch_suppression', metadata,
+    Column('company_number', String(20), primary_key=True),
+    Column('reason', String(255)),
+    Column('created_at', DateTime, default=datetime.utcnow),
+)
+
 # Every table is now declared — build them all in one shot. Safe to run on each
 # boot: it only creates tables that don't already exist.
-metadata.create_all(engine)
+#
+# Wrapped in try/except on purpose. The Table(...) objects above register
+# themselves on the shared `metadata` (which lives in database.py) the moment
+# they're constructed — BEFORE this line runs. If create_all raised (e.g. the
+# Cloud SQL instance is briefly stopped/restarting), this module's import would
+# fail *after* the tables were already registered on that long-lived metadata.
+# Streamlit then re-runs the script, re-imports this module, and the first
+# `Table('sales_leads', metadata, ...)` blows up with "Table is already defined
+# for this MetaData instance" — wedging the ENTIRE app (even the login page)
+# until the process is rebooted. Swallowing the error here lets the app finish
+# importing and degrade gracefully: existing tables already exist, and any
+# brand-new tables get created on the next boot once the database is reachable.
+try:
+    metadata.create_all(engine)
+except Exception as _e:
+    print(f"create_all skipped (database unreachable at boot?): {_e}")
 
 # create_all only CREATEs missing tables — it never adds a column to a table
 # that already exists. These three columns were introduced after sales_leads and

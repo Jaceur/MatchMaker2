@@ -1,0 +1,14 @@
+{
+  "company_name": "GLOBAL TRADE WIDGETS LTD",
+  "company_number": "16000001",
+  "company_status": "active",
+  "type": "ltd",
+  "date_of_creation": "2026-06-30",
+  "sic_codes": ["46210", "62020"],
+  "registered_office_address": {
+    "premises": "12",
+    "address_line_1": "Commercial Wharf Road",
+    "locality": "Manchester",
+    "postal_code": "M1 2AB"
+  }
+}

@@ -19,6 +19,7 @@ import ae_dashboard
 import ae_home
 import admin_panel
 import leaderboard
+import new_incorps_page
 
 # --- PAGE CONFIGURATION (must be the first st command) ---
 st.set_page_config(page_title="Matchmaker 2.0 | Lead Triage", layout="centered")
@@ -85,7 +86,10 @@ else:
             f"({st.session_state.role.title()})"
         )
 
-        nav_options = ["Swipe Leads", "My Pipeline", "AE Dashboard", "Leaderboard"]
+        nav_options = [
+            "Swipe Leads", "My Pipeline", "AE Dashboard", "Leaderboard",
+            "High Quality New Incorps",
+        ]
         if st.session_state.role == 'admin':
             nav_options.append("Admin Dashboard")
         page_selection = st.radio("Navigation", nav_options)
@@ -105,6 +109,8 @@ else:
         ae_home.render_ae_dashboard(engine, st.session_state.username)
     elif page_selection == "Leaderboard":
         leaderboard.render_leaderboard(engine)
+    elif page_selection == "High Quality New Incorps":
+        new_incorps_page.render(engine, st.session_state.role)
     elif page_selection == "Admin Dashboard":
         if st.session_state.role == 'admin':  # check at the door, not just hide the button
             admin_panel.render_dashboard(engine)

@@ -1,0 +1,16 @@
+{
+  "items": [
+    {
+      "type": "NEWINC",
+      "category": "incorporation",
+      "date": "2026-06-30",
+      "description": "incorporation-company",
+      "associated_filings": [
+        {
+          "type": "MODEL ARTICLES",
+          "description": "model-articles-adopted"
+        }
+      ]
+    }
+  ]
+}

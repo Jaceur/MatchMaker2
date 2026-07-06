@@ -1,0 +1,23 @@
+{
+  "items": [
+    {
+      "type": "SH01",
+      "category": "capital",
+      "date": "2026-07-03",
+      "description": "capital-allotment-shares",
+      "description_values": {
+        "date": "2026-07-01",
+        "capital": [
+          {
+            "currency": "EUR",
+            "figure": "100,000"
+          },
+          {
+            "currency": "GBP",
+            "figure": "12000.50"
+          }
+        ]
+      }
+    }
+  ]
+}

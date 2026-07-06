@@ -1,11 +1,9 @@
 streamlit
-cloud-sql-python-connector
 pg8000
 sqlalchemy
 requests
 ddgs
 beautifulsoup4
-google-auth
 pandas
 bcrypt
 rapidfuzz

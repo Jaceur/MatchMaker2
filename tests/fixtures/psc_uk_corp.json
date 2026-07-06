@@ -1,0 +1,27 @@
+{
+  "items": [
+    {
+      "kind": "corporate-entity-person-with-significant-control",
+      "name": "BRITISH GROUP HOLDINGS LIMITED",
+      "identification": {
+        "country_registered": "England",
+        "legal_form": "ltd"
+      },
+      "address": {
+        "address_line_1": "1 Corporate Way",
+        "locality": "Leeds",
+        "country": "England"
+      },
+      "natures_of_control": ["ownership-of-shares-75-to-100-percent"]
+    },
+    {
+      "kind": "individual-person-with-significant-control",
+      "name": "Ms Jane Smith",
+      "address": {
+        "locality": "Leeds",
+        "country": "England"
+      },
+      "natures_of_control": ["voting-rights-25-to-50-percent"]
+    }
+  ]
+}

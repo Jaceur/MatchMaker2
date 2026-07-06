@@ -16,10 +16,14 @@ system and an admin control centre.
 
 - **Host:** Streamlit Cloud, deploys from GitHub **`Jaceur/MatchMaker2`** (branch `main`).
 - **Entry point:** `app.py` (Streamlit Cloud → Settings → Main file path must be `app.py`).
-- **DB:** Google Cloud SQL (Postgres `sales-pipeline`, instance `enrichmentno:europe-west2:matchmaker-2`),
-  reached via the Cloud SQL Python Connector over public IP.
-- **Secrets** (`.streamlit/secrets.toml`, gitignored, present locally): `gcp_service_account`,
-  `DB_PASSWORD`, `CH_API_KEY`. The auth cookie is signed with an HMAC key derived from `DB_PASSWORD`.
+- **DB:** **Supabase** (managed Postgres). Reached over the **Session pooler** (IPv4-friendly; the
+  direct `db.<ref>.supabase.co` host is IPv6-only and unreachable from Streamlit Cloud) using the
+  pure-Python `pg8000` driver + TLS. All connection logic is in `database.py`. (Migrated off Google
+  Cloud SQL 2026-07-06.)
+- **Secrets** (`.streamlit/secrets.toml`, gitignored, present locally): a `[supabase]` table
+  (`host`, `port`, `user`, `dbname`), plus top-level `DB_PASSWORD` (the Supabase DB password) and
+  `CH_API_KEY`. The auth cookie is signed with an HMAC key derived from `DB_PASSWORD`, so changing
+  the DB password logs everyone out once (harmless — they just log back in).
 - **Python 3.14** on the deploy env (bleeding edge — watch for missing wheels if adding deps).
 - **Run locally:** `streamlit run app.py` (needs the secrets file + `pip install -r requirements.txt`).
 - **Git:** commits are made locally on `main`; **the user pushes** (don't push). At the time of this
@@ -250,7 +254,49 @@ unify on the pipeline → `77fc1ee` keep My-Pipeline position → `b24bdb1` scor
 - **Most changes were compile-/logic-checked in the dev env** (no live DB/network) — smoke-test on deploy.
 - **Second enrichment / Stage B OCR is local-only** (needs the `poppler` + `tesseract` binaries).
 
-## 11. Useful SQL
+## 11. CH Lead Engine — the "High Quality New Incorps" page
+
+A second, self-contained subsystem (all files/tables prefixed `ch_`) that watches Companies House
+for **newly incorporated** companies with high expected banking usage (FX, cross-border flows, real
+paid-up capital), scores them 0-ish to ~155, and tiers them: **Tier 1 ≥ 60** (high-touch outbound),
+**Tier 2 30–59** (sequence), **Tier 3 < 30** (stored, hidden). It optimises *expected transaction
+volume × chance of displacing the incumbent bank* — so a foreign-parented NewCo beats a hundred £1
+companies, and holding-co/property-SPV vehicles are down-scored. Surfaced on the
+**High Quality New Incorps** page (all users; admin gets pipeline controls) and as md/CSV digests.
+
+| File | Responsibility |
+|---|---|
+| `ch_client.py` | REST client: auth, **shared 550-per-5-min rate limiter**, retries. Smoke test: `python ch_client.py 00000006` |
+| `ch_signals.py` | **Pure** signal detection: capital parsing (incl. `associated_filings` fallback), address normalisation + seed formation-agent list, SIC/PSC/officer rules, SPV-farm + quality-director patterns |
+| `ch_scoring.py` | **Pure** scoring: the one `WEIGHTS` dict, tiers, event bonus, `top_signals` |
+| `ch_enrich.py` | Drain `ch_queue`: fetch profile/PSC/officers/filings, PSC-lag recheck (young co, empty PSC → retry in 48h), serial-director lookups (capped), persist + score. **`sweep_events` = the REST SH01/MR01 detector** (2 calls/company, de-duped by `ref`) that promotes to Tier 1 — the chosen alternative to the /filings stream. `apply_event` = the same promotion for the optional stream path |
+| `ch_stream.py` | **`python ch_stream.py companies`** — the ONE long-running listener we use (real-time new incorps → queue; timepoint resume via `ch_stream_state`; **needs CH_STREAM_KEY**). `filings` exists but is optional/not-recommended — REST (`sweep_events`) covers events; don't run both or events double-record |
+| `ch_backfill.py` | `python ch_backfill.py [days] [cap]` — REST ingest via advanced search, **no stream key needed**. The fallback/alternative to the companies stream |
+| `ch_run_local.py` | `python ch_run_local.py [N\|all]` — cron entrypoint: drains the queue **then runs the REST event sweep** (mirrors enrich_local.py) |
+| `ch_digest.py` | `python ch_digest.py [hours\|all]` — Tier 1/2 digest → `digests/*.md/.csv`; also feeds the page's download buttons |
+| `ch_hot_addresses.py` | Monthly: CH bulk snapshot CSV → `ch_hot_addresses` (any address on ≥100 live companies = formation agent, −25) |
+| `new_incorps_page.py` | The page: tier/SIC/name/event filters, breakdown drilldown, **Send to swipe pipeline** (inserts into sales_leads as `sourced`), **Suppress** (GDPR list), admin backfill/enrich/digest controls |
+| `tests/` | 37 pytest tests + recorded CH fixtures for signals/scoring/capital (`python -m pytest tests`; needs `pip install pytest`) |
+
+Tables (`models.py`, auto-created by `create_all` — no `_ADDED_COLUMNS` needed since they're new):
+`ch_companies`, `ch_psc`, `ch_officers`, `ch_capital_statements`, `ch_events`, `ch_scores`
+(breakdown JSONB = the audit trail for future weight tuning), `ch_queue`, `ch_stream_state`,
+`ch_hot_addresses`, `ch_suppression`.
+
+**Operation (decided 2026-07-06 — stream only for new incorps, REST for events):** the ONLY
+streaming process is `python ch_stream.py companies` (real-time new incorporations; run it on an
+always-on machine, not Streamlit Cloud). Everything else is REST: `python ch_run_local.py all`
+drains the queue and then sweeps for SH01/MR01 trigger events — no /filings stream. Without a
+stream key at all, swap the companies stream for `python ch_backfill.py` on a schedule (same
+companies, up to a day later). Missing data is always
+neutral: no capital figure / no SIC / no PSC yet contributes 0 points, never negative; young
+companies with empty PSC lists are automatically rescored ~48h later.
+
+This subsystem deliberately does NOT touch `sales_leads` except via the page's explicit
+"Send to swipe pipeline" button, and it shares the CH_API_KEY (the rate limiter keeps it inside
+budget). It produces lists only — no outreach.
+
+## 12. Useful SQL
 
 ```sql
 -- See the screening outcomes of the last pipeline run:

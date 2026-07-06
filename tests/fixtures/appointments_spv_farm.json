@@ -1,0 +1,17 @@
+{
+  "items": [
+    {"appointed_on": "2026-06-30", "appointed_to": {"company_number": "16000001", "company_name": "GLOBAL TRADE WIDGETS LTD", "company_status": "active"}},
+    {"appointed_on": "2018-01-10", "appointed_to": {"company_number": "11100001", "company_name": "SPV ONE LTD", "company_status": "dissolved"}},
+    {"appointed_on": "2018-03-15", "appointed_to": {"company_number": "11100002", "company_name": "SPV TWO LTD", "company_status": "dissolved"}},
+    {"appointed_on": "2018-07-01", "appointed_to": {"company_number": "11100003", "company_name": "SPV THREE LTD", "company_status": "dissolved"}},
+    {"appointed_on": "2019-02-20", "appointed_to": {"company_number": "11100004", "company_name": "SPV FOUR LTD", "company_status": "dissolved"}},
+    {"appointed_on": "2019-06-11", "appointed_to": {"company_number": "11100005", "company_name": "SPV FIVE LTD", "company_status": "dissolved"}},
+    {"appointed_on": "2020-01-05", "appointed_to": {"company_number": "11100006", "company_name": "SPV SIX LTD", "company_status": "dissolved"}},
+    {"appointed_on": "2020-08-19", "appointed_to": {"company_number": "11100007", "company_name": "SPV SEVEN LTD", "company_status": "dissolved"}},
+    {"appointed_on": "2021-03-30", "appointed_to": {"company_number": "11100008", "company_name": "SPV EIGHT LTD", "company_status": "dissolved"}},
+    {"appointed_on": "2021-11-11", "appointed_to": {"company_number": "11100009", "company_name": "SPV NINE LTD", "company_status": "dissolved"}},
+    {"appointed_on": "2022-04-01", "appointed_to": {"company_number": "11100010", "company_name": "SPV TEN LTD", "company_status": "dissolved"}},
+    {"appointed_on": "2023-05-14", "appointed_to": {"company_number": "11100011", "company_name": "STILL GOING LTD", "company_status": "active"}},
+    {"appointed_on": "2024-09-02", "appointed_to": {"company_number": "11100012", "company_name": "ALSO ALIVE LTD", "company_status": "active"}}
+  ]
+}
