@@ -394,6 +394,25 @@ ch_suppression = Table(
     Column('created_at', DateTime, default=datetime.utcnow),
 )
 
+# "Add to pipe" claims. One row = one company claimed by one user. company_number
+# is the PK, so a company can only be claimed once (first-come-first-served — this
+# is a race); claiming removes it from everyone else's board.
+ch_claims = Table(
+    'ch_claims', metadata,
+    Column('company_number', String(20), primary_key=True),
+    Column('username', String(100)),
+    Column('claimed_at', DateTime, default=datetime.utcnow),
+)
+
+# "Pass" dismissals — PER USER (composite key), so one rep passing a lead only
+# hides it from their own board, not the whole team's.
+ch_passes = Table(
+    'ch_passes', metadata,
+    Column('company_number', String(20), primary_key=True),
+    Column('username', String(100), primary_key=True),
+    Column('passed_at', DateTime, default=datetime.utcnow),
+)
+
 # Every table is now declared — build them all in one shot. Safe to run on each
 # boot: it only creates tables that don't already exist.
 #

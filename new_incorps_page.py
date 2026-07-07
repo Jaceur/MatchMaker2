@@ -6,11 +6,17 @@ Shows newly incorporated UK companies scored for expected banking usage
   Tier 2 (30–59)       — automated sequence
   Tier 3 (< 30)        — stored but hidden by default
 
-Everyone can browse, filter and drill into the signal breakdown; admins also
-get the pipeline controls (backfill, enrich, digests) and can promote a
-company into the main swipe pipeline or suppress it.
+Everyone can browse, filter and drill into the signal breakdown, then either
+**Pass** a lead (hidden from their own board only) or **Add to pipe** (claims it
+first-come-first-served — removed from everyone else's board — and surfaces the
+company's contact details with copy buttons in "My pipe"). Admins also get the
+pipeline controls (backfill, enrich, digests).
 """
+import html
+import re
+
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from sqlalchemy import text
 
@@ -56,7 +62,11 @@ def _get_stats(_engine):
 
 
 @st.cache_data(ttl=60)
-def _get_companies(_engine, tiers, sic_filter, name_filter, events_only):
+def _get_companies(_engine, tiers, sic_filter, name_filter, events_only, username):
+    # Excludes: suppressed (GDPR), ALREADY CLAIMED by anyone (taken — it's a
+    # race), and anything THIS user has passed (per-user, so a pass doesn't rob
+    # teammates). username is part of the cache key, so each rep sees their
+    # own board.
     query = """
         SELECT c.company_number, c.name, c.date_of_creation, c.sic_codes,
                s.score, s.tier, s.breakdown, s.scored_at,
@@ -66,8 +76,11 @@ def _get_companies(_engine, tiers, sic_filter, name_filter, events_only):
         JOIN ch_companies c ON c.company_number = s.company_number
         WHERE s.tier = ANY(:tiers)
           AND c.company_number NOT IN (SELECT company_number FROM ch_suppression)
+          AND c.company_number NOT IN (SELECT company_number FROM ch_claims)
+          AND c.company_number NOT IN (
+                SELECT company_number FROM ch_passes WHERE username = :user)
     """
-    params = {"tiers": tiers}
+    params = {"tiers": tiers, "user": username}
     if sic_filter:
         query += " AND c.sic_codes ILIKE :sic"
         params["sic"] = f"%{sic_filter}%"
@@ -85,6 +98,127 @@ def _get_companies(_engine, tiers, sic_filter, name_filter, events_only):
 def _clear_caches():
     _get_stats.clear()
     _get_companies.clear()
+
+
+# ==========================================
+# CONTACT DETAILS (for a claimed lead)
+# ==========================================
+def _split_name(full):
+    """Best-effort first/last from a Companies House officer name, which is
+    usually 'SURNAME, Forename Middlenames'. Rough is fine here."""
+    if not full:
+        return "", ""
+    full = full.strip()
+    if "," in full:                                   # "SMITH, John David"
+        last, rest = full.split(",", 1)
+        first = rest.strip().split()[0] if rest.strip() else ""
+        return first.title(), last.strip().title()
+    parts = full.split()                              # "John Smith"
+    if len(parts) == 1:
+        return parts[0].title(), ""
+    return parts[0].title(), parts[-1].title()
+
+
+def _email_from_company(name):
+    """A ROUGH guess: info@<company name minus Ltd/Limited, squashed>.co.uk.
+    Deliberately not verified — it's a starting point for outreach."""
+    if not name:
+        return ""
+    core = re.sub(r"\b(ltd|limited)\b\.?", "", name, flags=re.I)
+    core = re.sub(r"[^a-z0-9]", "", core.lower())
+    return f"info@{core}.co.uk" if core else ""
+
+
+def _contact_details(engine, number, company_name):
+    """First/last (from the first director on record) + company + guessed email."""
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT name FROM ch_officers WHERE company_number = :n "
+            "AND role = 'director' ORDER BY id LIMIT 1"), {"n": number}).first()
+    first, last = _split_name(row[0] if row else "")
+    return {"first": first, "last": last,
+            "company": company_name or "",
+            "email": _email_from_company(company_name)}
+
+
+def _render_contact_card(details):
+    """Contact details, each with a real one-click Copy button. Rendered as a
+    small self-contained HTML component (with a clipboard fallback), styled with
+    its own light card so it's readable on either Streamlit theme."""
+    rows = [("First Name", details["first"]), ("Last Name", details["last"]),
+            ("Company Name", details["company"]), ("Email", details["email"])]
+    body = ""
+    for label, value in rows:
+        v = html.escape(value or "", quote=True)
+        body += (
+            f'<div class="r"><span class="l">{label}:</span>'
+            f'<span class="v">{v or "—"}</span>'
+            f'<button class="c" data-copy="{v}">Copy</button></div>'
+        )
+    components.html(f"""
+    <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;
+                background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;
+                padding:14px;color:#111827;">
+      <style>
+        .r{{display:flex;align-items:center;gap:10px;margin:8px 0;}}
+        .l{{font-weight:600;min-width:120px;}}
+        .v{{flex:1;background:#f3f4f6;padding:6px 10px;border-radius:6px;
+            font-family:monospace;overflow-wrap:anywhere;}}
+        .c{{cursor:pointer;border:1px solid #d1d5db;background:#fff;
+            border-radius:6px;padding:6px 12px;font-weight:600;}}
+        .c:hover{{background:#eef2ff;}}
+      </style>
+      {body}
+      <script>
+        document.querySelectorAll('button.c').forEach(function(b){{
+          b.addEventListener('click', function(){{
+            var t=b.getAttribute('data-copy');
+            function done(){{var o=b.textContent;b.textContent='Copied!';
+              setTimeout(function(){{b.textContent=o;}},1000);}}
+            if(navigator.clipboard&&navigator.clipboard.writeText){{
+              navigator.clipboard.writeText(t).then(done).catch(fb);
+            }}else{{fb();}}
+            function fb(){{var ta=document.createElement('textarea');ta.value=t;
+              document.body.appendChild(ta);ta.select();
+              try{{document.execCommand('copy');}}catch(e){{}}
+              document.body.removeChild(ta);done();}}
+          }});
+        }});
+      </script>
+    </div>
+    """, height=210)
+
+
+def _render_my_pipe(engine, username):
+    """The current user's claimed leads, each with its copy-ready contact card."""
+    with engine.connect() as conn:
+        claims = pd.read_sql(text("""
+            SELECT c.company_number, c.name, cl.claimed_at
+            FROM ch_claims cl
+            JOIN ch_companies c ON c.company_number = cl.company_number
+            WHERE cl.username = :u
+            ORDER BY cl.claimed_at DESC
+        """), conn, params={"u": username})
+
+    with st.expander(f"📋 My pipe — claimed leads ({len(claims)})",
+                     expanded=not claims.empty):
+        if claims.empty:
+            st.caption("Claim a lead with **Add to pipe** below and its contact "
+                       "details will appear here, ready to copy.")
+            return
+        for r in claims.itertuples():
+            st.markdown(f"**{r.name}**  ·  [{r.company_number}]"
+                        f"({CH_LINK}{r.company_number})")
+            _render_contact_card(_contact_details(engine, r.company_number, r.name))
+            if st.button("↩️ Release back to the board",
+                         key=f"release_{r.company_number}"):
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "DELETE FROM ch_claims WHERE company_number = :n "
+                        "AND username = :u"), {"n": r.company_number, "u": username})
+                _clear_caches()
+                st.rerun()
+            st.divider()
 
 
 # ==========================================
@@ -175,7 +309,7 @@ def _render_admin_controls(engine):
 # ==========================================
 # DRILLDOWN
 # ==========================================
-def _render_drilldown(engine, df, is_admin):
+def _render_drilldown(engine, df, username):
     st.markdown("### 🔍 Company drilldown")
     options = {
         f"{row.name} ({row.company_number}) — {row.score}": row.company_number
@@ -237,50 +371,60 @@ def _render_drilldown(engine, df, is_admin):
             else:
                 st.dataframe(table, hide_index=True, use_container_width=True)
 
-    if is_admin:
-        bcol1, bcol2 = st.columns(2)
-        with bcol1:
-            if st.button("➕ Send to swipe pipeline", use_container_width=True,
-                         help="Adds this company to sales_leads as a sourced lead — "
-                              "it goes through the normal enrichment pipeline next run."):
-                with engine.begin() as conn:
-                    result = conn.execute(text("""
-                        INSERT INTO sales_leads
-                               (crn, company_name, incorporation_date, sic_codes, status)
-                        VALUES (:crn, :name, :inc, :sic, 'sourced')
-                        ON CONFLICT (crn) DO NOTHING
-                    """), {"crn": number, "name": row["name"],
-                           "inc": row.date_of_creation, "sic": row.sic_codes})
-                if result.rowcount:
-                    st.success("Added to the main pipeline as a sourced lead.")
-                else:
-                    st.info("Already in the main pipeline.")
-        with bcol2:
-            if st.button("🚫 Suppress", use_container_width=True,
-                         help="Hide this company from the page and all digests "
-                              "(GDPR/opt-out list)."):
-                with engine.begin() as conn:
-                    conn.execute(text("""
-                        INSERT INTO ch_suppression (company_number, reason)
-                        VALUES (:n, 'manual (page)')
-                        ON CONFLICT (company_number) DO NOTHING
-                    """), {"n": number})
-                _clear_caches()
-                st.success("Suppressed.")
-                st.rerun()
+    st.markdown("#### Actions")
+    bcol1, bcol2 = st.columns(2)
+    with bcol1:
+        if st.button("👎 Pass", use_container_width=True,
+                     help="Hide this company from YOUR board. Teammates still see it."):
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    INSERT INTO ch_passes (company_number, username)
+                    VALUES (:n, :u) ON CONFLICT DO NOTHING
+                """), {"n": number, "u": username})
+            _clear_caches()
+            st.rerun()
+    with bcol2:
+        if st.button("✅ Add to pipe", type="primary", use_container_width=True,
+                     help="Claim this lead — it's removed from everyone else's board "
+                          "and its contact details appear in 'My pipe' at the top."):
+            with engine.begin() as conn:
+                res = conn.execute(text("""
+                    INSERT INTO ch_claims (company_number, username)
+                    VALUES (:n, :u) ON CONFLICT (company_number) DO NOTHING
+                """), {"n": number, "u": username})
+            _clear_caches()
+            if res.rowcount:
+                st.toast(f"Added {row['name']} to your pipe ✅")
+            else:
+                st.toast("Someone else just claimed this one.", icon="⚠️")
+            st.rerun()
 
 
 # ==========================================
 # THE PAGE
 # ==========================================
 def render(engine, role):
-    st.title("💎 High Quality New Incorps")
+    username = st.session_state.get("username", "")
+
+    head_l, head_r = st.columns([4, 1])
+    with head_l:
+        st.title("💎 High Quality New Incorps")
+    with head_r:
+        st.write("")  # nudge the button down to line up with the title
+        if st.button("🔄 Refresh", use_container_width=True,
+                     help="Reload the latest scored companies. Does NOT reload the "
+                          "browser, so it won't log you out."):
+            _clear_caches()
+            st.rerun()
+
     st.write(
         "Newly incorporated UK companies with high expected banking usage — "
         "foreign parents, real paid-up capital, FX-heavy sectors — scored and "
         "tiered. Fed by Companies House, refreshed by the backfill/stream "
         "listeners."
     )
+
+    _render_my_pipe(engine, username)
 
     stats = _get_stats(engine)
     c1, c2, c3, c4 = st.columns(4)
@@ -316,7 +460,7 @@ def render(engine, role):
         return
 
     df = _get_companies(engine, tiers, sic_filter.strip(), name_filter.strip(),
-                        events_only)
+                        events_only, username)
     if df.empty:
         st.info(
             "No scored companies match. If the engine is brand new: an admin "
@@ -349,4 +493,4 @@ def render(engine, role):
     st.caption(f"{len(df)} companies shown (capped at 500).")
 
     st.divider()
-    _render_drilldown(engine, df, is_admin=(role == "admin"))
+    _render_drilldown(engine, df, username)
