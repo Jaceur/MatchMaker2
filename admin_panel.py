@@ -7,13 +7,7 @@ from pipeline import run_enrichment_pipeline
 from leads import clear_all_data, clear_pipeline_data, assign_leads_to_ae, top_up_allocation
 from settings import (
     get_qualify_percent, set_qualify_percent, qualify_percent_to_bar, get_qualify_bar,
-    get_stream_enabled, set_stream_enabled,
 )
-
-
-def _toggle_stream():
-    """Persist the stream on/off switch when the admin flips it."""
-    set_stream_enabled(st.session_state.stream_toggle)
 
 
 def _save_qualify_bar():
@@ -145,25 +139,6 @@ def _allocation_controls(user_list, unassigned_count):
 def render_dashboard(engine):
     st.title("⚙️ Admin Control Center")
     st.write("Manage the Matchmaker 2.0 pipeline engine and monitor team output.")
-
-    # --- COMPANIES HOUSE STREAM ON/OFF ---
-    with st.container(border=True):
-        st.markdown("### 📡 Companies House Stream")
-        if "stream_toggle" not in st.session_state:
-            st.session_state.stream_toggle = get_stream_enabled()
-        st.toggle(
-            "Stream new incorporations to the Google Sheet",
-            key="stream_toggle", on_change=_toggle_stream,
-            help="When ON, the always-on worker posts each newly incorporated "
-                 "UK company to your Google Sheet. When OFF, it stays connected "
-                 "but stops posting. The worker picks up the change within ~10s.",
-        )
-        if st.session_state.stream_toggle:
-            st.success("🟢 Stream is ON — new incorporations are being sent to the sheet.")
-        else:
-            st.warning("🔴 Stream is OFF — nothing is being sent to the sheet.")
-
-    st.divider()
 
     stats = _get_pipeline_stats(engine)
 

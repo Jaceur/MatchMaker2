@@ -61,23 +61,3 @@ def get_qualify_bar():
     """The current minimum lead_score (30-50) a lead must reach to qualify. This
     is what the staged pipeline gates on."""
     return qualify_percent_to_bar(get_qualify_percent())
-
-
-# ---------------------------------------------------------------------------
-# Companies House stream on/off switch
-# ---------------------------------------------------------------------------
-# The admin dashboard flips this; the Railway worker (ch_sheet_stream.py) reads
-# it every few seconds and pauses/resumes posting to the Google Sheet. Stored in
-# the same app_settings table so both processes share one source of truth.
-STREAM_SETTING_KEY = "stream_enabled"
-
-
-def get_stream_enabled():
-    """True if the CH -> Google Sheet stream should be posting. Defaults ON so a
-    brand-new / unreadable setting doesn't silently stop the feed."""
-    raw = get_setting(STREAM_SETTING_KEY, "true")
-    return str(raw).strip().lower() in ("true", "1", "on", "yes")
-
-
-def set_stream_enabled(enabled):
-    set_setting(STREAM_SETTING_KEY, "true" if enabled else "false")

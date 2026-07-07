@@ -49,37 +49,6 @@ NEW_INCORP_MAX_AGE_DAYS = 10          # ignore stream updates for older companie
 READ_TIMEOUT = 120
 BACKOFF_MAX = 300
 
-# On/off switch, flipped from the Streamlit Admin dashboard and stored in the
-# shared app_settings table. We read it at most every FLAG_TTL seconds so the
-# stream isn't querying the DB on every event.
-STREAM_FLAG_KEY = "stream_enabled"
-FLAG_TTL = 10
-_flag = {"value": True, "at": 0.0}
-
-
-def stream_enabled():
-    """Whether the admin switch is ON. Cached for FLAG_TTL seconds. On any DB
-    error we keep the last known value, so a database blip can't silently stop
-    the feed. Needs the Supabase env vars (same ones the web app uses)."""
-    now = time.time()
-    if now - _flag["at"] < FLAG_TTL:
-        return _flag["value"]
-    _flag["at"] = now
-    try:
-        from database import engine
-        from sqlalchemy import text
-        with engine.connect() as conn:
-            row = conn.execute(
-                text("SELECT value FROM app_settings WHERE key = :k"),
-                {"k": STREAM_FLAG_KEY},
-            ).first()
-        _flag["value"] = (row is None) or \
-            str(row[0]).strip().lower() in ("true", "1", "on", "yes")
-    except Exception as e:
-        print(f"[sheet] flag read failed ({e}); keeping {_flag['value']}",
-              flush=True)
-    return _flag["value"]
-
 
 # ---------------------------------------------------------------------------
 # Person name (PSC, falling back to the first director)
@@ -205,25 +174,13 @@ def main():
     print(f"[sheet] posting new incorporations to {WEBHOOK_URL[:60]}...",
           flush=True)
     seen = set()
-    posting = True
     for event in stream_events():
         data = event.get("data") or {}
         number = data.get("company_number")
         if not number or number in seen or not _is_new_incorporation(data):
             continue
-
-        # Paused from the admin dashboard: stay connected but don't post (and
-        # don't spend a REST lookup). Log the transition once, not every event.
-        if not stream_enabled():
-            if posting:
-                print("[sheet] paused (admin switch OFF)", flush=True)
-                posting = False
-            continue
-        if not posting:
-            print("[sheet] resumed (admin switch ON)", flush=True)
-            posting = True
-
         seen.add(number)
+
         first, last = person_name(number)
         payload = {
             "timePulled": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
