@@ -13,11 +13,40 @@ IPv4-friendly and behaves like a normal Postgres connection.
 Still on the pure-Python `pg8000` driver (no binary wheels), so it installs
 cleanly on the deploy env's bleeding-edge Python.
 """
+import os
 import ssl
 
 import streamlit as st
 from sqlalchemy import create_engine, MetaData
 from sqlalchemy.engine import URL
+
+
+def _conn_params():
+    """Supabase connection settings, from Streamlit secrets when available (the
+    web app) and otherwise from environment variables (a headless host like the
+    always-on worker in ch_worker.py, where there's no secrets.toml). The env
+    var names mirror the secrets keys: DB_PASSWORD, SUPABASE_HOST/PORT/USER/
+    DBNAME."""
+    def secret(section, key=None):
+        # st.secrets raises if there's no secrets file at all — treat any miss
+        # as "not set here, look at the environment instead".
+        try:
+            return st.secrets[section][key] if key else st.secrets[section]
+        except Exception:
+            return None
+
+    password = secret("DB_PASSWORD") or os.environ.get("DB_PASSWORD")
+    host = secret("supabase", "host") or os.environ.get("SUPABASE_HOST")
+    user = secret("supabase", "user") or os.environ.get("SUPABASE_USER")
+    port = secret("supabase", "port") or os.environ.get("SUPABASE_PORT", 5432)
+    dbname = secret("supabase", "dbname") or os.environ.get("SUPABASE_DBNAME", "postgres")
+    if not (host and user and password):
+        raise RuntimeError(
+            "Database config missing. Set a [supabase] section + DB_PASSWORD in "
+            ".streamlit/secrets.toml, or SUPABASE_HOST/SUPABASE_USER/DB_PASSWORD "
+            "environment variables."
+        )
+    return host, int(port), user, dbname, str(password)
 
 
 # Streamlit caches this so the whole app shares ONE engine / connection pool,
@@ -28,14 +57,14 @@ def get_backend_engine():
     # symbols like @ : / ? # can't corrupt the connection string — URL.create
     # escapes each part for us. The password stays under the existing
     # DB_PASSWORD secret because auth.py also uses it to sign the login cookie.
-    cfg = st.secrets["supabase"]
+    host, port, user, dbname, password = _conn_params()
     url = URL.create(
         "postgresql+pg8000",
-        username=cfg["user"],                       # e.g. postgres.<project-ref>
-        password=str(st.secrets["DB_PASSWORD"]),    # the Supabase DB password
-        host=cfg["host"],                           # e.g. aws-0-<region>.pooler.supabase.com
-        port=int(cfg.get("port", 5432)),            # Session pooler = 5432
-        database=cfg.get("dbname", "postgres"),
+        username=user,          # e.g. postgres.<project-ref>
+        password=password,      # the Supabase DB password
+        host=host,              # e.g. aws-0-<region>.pooler.supabase.com
+        port=port,              # Session pooler = 5432
+        database=dbname,
     )
 
     # Supabase requires TLS, but its pooler cert is rooted in Supabase's own
