@@ -106,18 +106,21 @@ def person_name(company_number):
 
 def post_to_sheet(payload, retries=4):
     """POST the JSON payload to the Apps Script endpoint, with backoff. Returns
-    True on success. requests follows Apps Script's 302 redirect automatically."""
+    True only when the script actually confirms success ({"status":"success"}).
+    A 200 that is really Google's login page (wrong access setting / wrong URL)
+    counts as a FAILURE and is logged with its body so the cause is visible."""
     last = None
     for attempt in range(retries):
         try:
             resp = requests.post(WEBHOOK_URL, json=payload, timeout=30)
-            if resp.ok:
+            body = (resp.text or "")[:200]
+            if resp.ok and "success" in body.lower():
                 return True
-            last = f"HTTP {resp.status_code}"
+            last = f"HTTP {resp.status_code}, body: {body!r}"
         except requests.RequestException as e:
             last = str(e)
         time.sleep(2 ** attempt)
-    print(f"[sheet] POST failed after {retries} tries: {last}", flush=True)
+    print(f"[sheet] POST failed: {last}", flush=True)
     return False
 
 
@@ -181,18 +184,20 @@ def main():
             continue
         seen.add(number)
 
+        company = data.get("company_name", "") or ""
+        print(f"[sheet] new incorp {company} ({number}) — posting...", flush=True)
         first, last = person_name(number)
         payload = {
             "timePulled": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
             # camelCase to match the other keys the Apps Script reads — the
             # PascalCase "CompanyName" was being ignored on the script side.
-            "companyName": data.get("company_name", "") or "",
+            "companyName": company,
             "sicCode": ", ".join(data.get("sic_codes") or []),
             "firstName": first,
             "lastName": last,
         }
         if post_to_sheet(payload):
-            print(f"[sheet] +{payload['companyName']} ({number})", flush=True)
+            print(f"[sheet] posted {company} ({number})", flush=True)
 
 
 if __name__ == "__main__":
