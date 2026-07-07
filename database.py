@@ -50,8 +50,10 @@ def _conn_params():
 
 
 # Streamlit caches this so the whole app shares ONE engine / connection pool,
-# even though `engine` is imported across many pages.
-@st.cache_resource
+# even though `engine` is imported across many pages. show_spinner=False keeps
+# it quiet when imported OUTSIDE Streamlit (the ch_worker.py headless worker),
+# where drawing a spinner has no session and would otherwise log errors.
+@st.cache_resource(show_spinner=False)
 def get_backend_engine():
     # Structured fields (not a single URL string) so a password containing
     # symbols like @ : / ? # can't corrupt the connection string — URL.create
