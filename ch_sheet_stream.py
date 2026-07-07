@@ -34,6 +34,7 @@ from datetime import datetime
 import requests
 
 import ch_client  # rate-limited CH REST client (no database dependency)
+import ch_signals  # pure parsers (capital extraction) — no database dependency
 from ch_client import get_secret
 
 # The Apps Script web-app endpoint. Overridable via env var so a new deployment
@@ -77,9 +78,26 @@ def _name_from_elements(item):
     return None
 
 
-def person_name(company_number):
-    """First/last of the PSC, falling back to the first active director when the
-    PSC list hasn't populated yet (common for a brand-new company)."""
+def _dob_str(item):
+    """CH only publishes a person's birth month + year (not the day)."""
+    dob = item.get("date_of_birth") or {}
+    month, year = dob.get("month"), dob.get("year")
+    if month and year:
+        return f"{int(month):02d}/{year}"
+    return ""
+
+
+def _person_from(item):
+    first, last = _name_from_elements(item) or _split_name(item.get("name"))
+    return {"first": first, "last": last,
+            "residence": item.get("country_of_residence") or "",
+            "dob": _dob_str(item)}
+
+
+def person_details(company_number):
+    """First/last, country of residence and birth month/year of the PSC —
+    falling back to the first active director when the PSC list hasn't populated
+    yet (common for a brand-new company). One REST call, sometimes two."""
     try:
         psc = ch_client.persons_with_significant_control(company_number)
     except Exception:
@@ -88,7 +106,7 @@ def person_name(company_number):
         if item.get("ceased_on"):
             continue
         if (item.get("kind") or "").startswith("individual"):
-            return _name_from_elements(item) or _split_name(item.get("name"))
+            return _person_from(item)
 
     try:
         officers = ch_client.officers(company_number)
@@ -96,8 +114,24 @@ def person_name(company_number):
         officers = None
     for o in (officers or {}).get("items", []) or []:
         if o.get("officer_role") == "director" and not o.get("resigned_on"):
-            return _name_from_elements(o) or _split_name(o.get("name"))
-    return "", ""
+            return _person_from(o)
+    return {"first": "", "last": "", "residence": "", "dob": ""}
+
+
+def starting_capital(company_number):
+    """The company's paid-up share capital from its incorporation filing — one
+    REST call. Returns a number (GBP figure if present, else the largest figure
+    of any currency) or '' when no capital statement is available."""
+    try:
+        fh = ch_client.filing_history(company_number)
+    except Exception:
+        return ""
+    statements = ch_signals.extract_capital_statements(fh)
+    best_gbp, _ = ch_signals.summarise_capital(statements)
+    if best_gbp is not None:
+        return int(best_gbp)
+    figures = [s["figure"] for s in statements if s["figure"] is not None]
+    return int(max(figures)) if figures else ""
 
 
 # ---------------------------------------------------------------------------
@@ -186,15 +220,17 @@ def main():
 
         company = data.get("company_name", "") or ""
         print(f"[sheet] new incorp {company} ({number}) — posting...", flush=True)
-        first, last = person_name(number)
+        person = person_details(number)
         payload = {
             "timePulled": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            # camelCase to match the other keys the Apps Script reads — the
-            # PascalCase "CompanyName" was being ignored on the script side.
+            # camelCase keys to match what the Apps Script reads.
             "companyName": company,
             "sicCode": ", ".join(data.get("sic_codes") or []),
-            "firstName": first,
-            "lastName": last,
+            "startingCapital": starting_capital(number),
+            "firstName": person["first"],
+            "lastName": person["last"],
+            "residence": person["residence"],
+            "doB": person["dob"],
         }
         if post_to_sheet(payload):
             print(f"[sheet] posted {company} ({number})", flush=True)
