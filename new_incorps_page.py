@@ -327,7 +327,7 @@ def render(engine, role):
 
     display = df.assign(
         ch_link=CH_LINK + df["company_number"],
-        event="⚡" * df["has_event"].astype(int),
+        event=df["has_event"].map(lambda x: "⚡" if x else ""),
     )[["name", "company_number", "score", "tier", "event",
        "date_of_creation", "sic_codes", "ch_link"]]
     st.dataframe(
