@@ -12,6 +12,7 @@ This runs locally (it uses Tesseract/poppler for scanned PDFs), not on the
 Streamlit app — see second_enrich_local.py.
 """
 import io
+import os
 import re
 import time
 
@@ -26,6 +27,14 @@ from leads import TIER_THRESHOLD
 from scoring import score_lead, features_from_mapping
 
 CH_FILING_URL = "https://api.company-information.service.gov.uk/company/{crn}/filing-history"
+
+# --- OCR memory controls (the accounts-PDF OCR is the pipeline's heaviest step;
+# rendering a whole scanned PDF to bitmaps at once OOM-kills a small cloud box).
+# On a memory-constrained worker (Railway), set DISABLE_OCR=1 to skip OCR
+# entirely — the iXBRL path still parses the vast majority of modern accounts.
+DISABLE_OCR = os.environ.get("DISABLE_OCR", "").strip().lower() in ("1", "true", "yes", "on")
+OCR_DPI = int(os.environ.get("OCR_DPI", "120"))       # 200 default is 2.8x the pixels
+OCR_MAX_PAGES = int(os.environ.get("OCR_MAX_PAGES", "12"))  # accounts docs are short
 
 # ----------------------------------------------------------------------------
 # Field map — the single place to extend what we pull from accounts.
@@ -209,13 +218,30 @@ def _pdf_text(content):
     if len(text.strip()) >= 100:
         return text
 
-    # Scanned/flat PDF -> OCR.
+    if DISABLE_OCR:
+        print("   OCR skipped (DISABLE_OCR set) — iXBRL/text-layer only")
+        return text
+
+    # Scanned/flat PDF -> OCR. Render and OCR ONE page at a time (releasing each
+    # bitmap) at a modest DPI, capped, so peak memory is a single page rather
+    # than the whole document — otherwise a long scanned PDF OOM-kills the box.
     try:
         import pdf2image
         import pytesseract
-        images = pdf2image.convert_from_bytes(content)
-        text = "\n".join(pytesseract.image_to_string(img) for img in images)
-        print(f"   OCR'd {len(images)} page(s)")
+        try:
+            n_pages = int(pdf2image.pdfinfo_from_bytes(content).get("Pages", 1))
+        except Exception:
+            n_pages = 1
+        n_pages = min(n_pages, OCR_MAX_PAGES)
+        chunks = []
+        for page in range(1, n_pages + 1):
+            images = pdf2image.convert_from_bytes(
+                content, dpi=OCR_DPI, first_page=page, last_page=page)
+            for img in images:
+                chunks.append(pytesseract.image_to_string(img))
+                img.close()                       # free the bitmap immediately
+        text = "\n".join(chunks)
+        print(f"   OCR'd {n_pages} page(s) at {OCR_DPI} dpi")
     except Exception as e:
         print(f"   OCR failed (need poppler + tesseract installed): {e}")
     return text
