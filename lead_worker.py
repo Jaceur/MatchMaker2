@@ -72,21 +72,35 @@ def _is_cancelled(job_id):
     return status == "cancelled"
 
 
-def run_job(job_id, requested):
-    print(f"[leads] job {job_id}: source {requested} + enrich — starting", flush=True)
-
+def run_job(job_id, requested, resume=False):
     # --- 1. Source (random date per ~100-lead batch) -----------------------
-    def on_sourced(done, total):
-        _update_job(job_id, sourced=done)
-        print(f"[leads] job {job_id}: sourced {done}/{total}", flush=True)
+    # On resume (a job orphaned by a crashed worker) sourcing is skipped — the
+    # leads it already sourced are still 'sourced' in the pool; we just finish
+    # enriching them below.
+    if resume:
+        with engine.connect() as conn:
+            sourced = conn.execute(
+                select(pipeline_jobs.c.sourced)
+                .where(pipeline_jobs.c.id == job_id)
+            ).scalar() or 0
+        print(f"[leads] job {job_id}: RESUMING after a crash — skipping "
+              f"sourcing ({sourced} already sourced), finishing enrichment",
+              flush=True)
+    else:
+        print(f"[leads] job {job_id}: source {requested} + enrich — starting",
+              flush=True)
 
-    sourced = source_leads(requested, progress_callback=on_sourced,
-                           should_stop=lambda: _is_cancelled(job_id))
-    if _is_cancelled(job_id):
-        _update_job(job_id, sourced=sourced, finished_at=datetime.utcnow(),
-                    message=f"Cancelled during sourcing ({sourced} leads kept).")
-        print(f"[leads] job {job_id}: cancelled during sourcing", flush=True)
-        return
+        def on_sourced(done, total):
+            _update_job(job_id, sourced=done)
+            print(f"[leads] job {job_id}: sourced {done}/{total}", flush=True)
+
+        sourced = source_leads(requested, progress_callback=on_sourced,
+                               should_stop=lambda: _is_cancelled(job_id))
+        if _is_cancelled(job_id):
+            _update_job(job_id, sourced=sourced, finished_at=datetime.utcnow(),
+                        message=f"Cancelled during sourcing ({sourced} leads kept).")
+            print(f"[leads] job {job_id}: cancelled during sourcing", flush=True)
+            return
 
     # --- 2. Enrich every 'sourced' lead (incl. leftovers from past runs) ---
     with engine.connect() as conn:
@@ -129,9 +143,31 @@ def run_job(job_id, requested):
         print(f"[leads] job {job_id}: FAILED — {e}", flush=True)
 
 
+def _resume_orphaned_jobs():
+    """Any job still 'running' at startup was orphaned — this single worker is
+    the only thing that sets 'running', so if we're just starting, a running job
+    means a previous instance crashed mid-job (e.g. an OOM). Resume each: its
+    enriched leads are saved and its remaining 'sourced' leads just need
+    finishing, so it never gets stuck on the dashboard."""
+    with engine.connect() as conn:
+        orphaned = conn.execute(
+            select(pipeline_jobs.c.id, pipeline_jobs.c.requested)
+            .where(pipeline_jobs.c.status == "running")
+            .order_by(pipeline_jobs.c.id)
+        ).fetchall()
+    for row in orphaned:
+        print(f"[leads] orphaned job {row.id} found at startup — resuming",
+              flush=True)
+        try:
+            run_job(row.id, row.requested or 0, resume=True)
+        except Exception as e:
+            print(f"[leads] resume of job {row.id} errored: {e}", flush=True)
+
+
 def main():
     print(f"[leads] worker started — polling for jobs every {POLL_SECONDS}s",
           flush=True)
+    _resume_orphaned_jobs()          # finish anything a crash left mid-flight
     while True:
         try:
             job = _claim_next_job()
