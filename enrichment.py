@@ -223,7 +223,8 @@ def fetch_ch_signals(crn):
     """From Companies House: the account category (micro-entity / small / medium
     / full…) from the company profile, and the most recent director appoint
     (AP01) / terminate (TM01) date from filing history, with a 'recent' flag."""
-    auth = (st.secrets["CH_API_KEY"], "")
+    from ch_client import get_secret  # st.secrets locally, env var on Railway
+    auth = (get_secret("CH_API_KEY"), "")
     account_type = None
     last_change = None
 

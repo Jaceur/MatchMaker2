@@ -1,0 +1,8 @@
+# Railway (Nixpacks) build config — system binaries for the lead worker.
+#
+# The staged pipeline's accounts parser (second_enrichment.py) reads iXBRL in
+# pure Python, but its fallback for PDF-only filings needs poppler (pdf2image)
+# and tesseract (OCR). Installing them here gives the Railway lead worker full
+# parity with a local run. The "..." keeps Nixpacks' auto-detected packages.
+[phases.setup]
+nixPkgs = ["...", "poppler_utils", "tesseract"]

@@ -80,9 +80,10 @@ def fetch_top_directors(crn, limit=MAX_DIRECTORS):
     and year of birth, so that's the granularity we sort on.
     """
     try:
+        from ch_client import get_secret  # st.secrets locally, env var on Railway
         resp = requests.get(
             CH_OFFICERS_URL.format(crn=crn),
-            auth=(st.secrets["CH_API_KEY"], ""),
+            auth=(get_secret("CH_API_KEY"), ""),
             params={"items_per_page": 100},
             timeout=15,
         )

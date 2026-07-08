@@ -413,6 +413,30 @@ ch_passes = Table(
     Column('passed_at', DateTime, default=datetime.utcnow),
 )
 
+# ==========================================
+# CLOUD PIPELINE JOBS (Railway lead worker)
+# ==========================================
+# The admin dashboard queues a "source N + enrich" job here; the always-on
+# lead_worker.py on Railway polls for pending rows, runs the job, and writes
+# its progress back so the dashboard can show a live progress bar. Statuses:
+# pending -> running -> done | failed | cancelled.
+pipeline_jobs = Table(
+    'pipeline_jobs', metadata,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('job_type', String(30), default='source_enrich'),
+    Column('requested', Integer),                 # leads asked for (1-10,000)
+    Column('status', String(20), default='pending', index=True),
+    Column('sourced', Integer, default=0),        # progress: net new leads stored
+    Column('to_enrich', Integer, default=0),      # 'sourced' pool at enrich start
+    Column('enriched', Integer, default=0),       # progress: leads screened
+    Column('message', String(500)),               # result summary / error
+    Column('requested_by', String(100)),
+    Column('created_at', DateTime, default=datetime.utcnow),
+    Column('started_at', DateTime),
+    Column('finished_at', DateTime),
+    Column('updated_at', DateTime, default=datetime.utcnow),
+)
+
 # Every table is now declared — build them all in one shot. Safe to run on each
 # boot: it only creates tables that don't already exist.
 #

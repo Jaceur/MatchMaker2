@@ -181,6 +181,72 @@ def render_dashboard(engine):
 
     st.divider()
 
+    # --- CLOUD SOURCING & ENRICHMENT (Railway lead worker) ---
+    st.markdown("### ☁️ Cloud Sourcing & Enrichment")
+    st.caption(
+        "Queues a job for the always-on Railway worker: it sources the requested "
+        "number of new leads (a fresh **random incorporation date per batch of "
+        "100** — same behaviour as the manual button, just repeated) and then "
+        "enriches every sourced lead. Close the tab, come back later — it keeps "
+        "going in the cloud."
+    )
+    with engine.connect() as conn:
+        job = conn.execute(text(
+            "SELECT * FROM pipeline_jobs ORDER BY id DESC LIMIT 1"
+        )).mappings().fetchone()
+
+    if job and job["status"] in ("pending", "running"):
+        if job["status"] == "pending":
+            st.info(f"Job #{job['id']} queued — waiting for the Railway worker "
+                    "to pick it up (checks every ~10s).")
+        else:
+            st.info(f"Job #{job['id']} running on Railway.")
+        requested = job["requested"] or 1
+        sourced = job["sourced"] or 0
+        st.progress(min(sourced / requested, 1.0),
+                    text=f"Sourcing: {sourced}/{requested} new leads")
+        to_enrich = job["to_enrich"] or 0
+        if to_enrich:
+            enriched = job["enriched"] or 0
+            st.progress(min(enriched / to_enrich, 1.0),
+                        text=f"Enriching: {enriched}/{to_enrich} leads")
+        col_r, col_c = st.columns(2)
+        if col_r.button("🔄 Refresh status", use_container_width=True):
+            _clear_admin_caches()
+            st.rerun()
+        if col_c.button("🛑 Cancel job", use_container_width=True):
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "UPDATE pipeline_jobs SET status = 'cancelled', "
+                    "updated_at = now() WHERE id = :i "
+                    "AND status IN ('pending', 'running')"), {"i": job["id"]})
+            st.rerun()
+    else:
+        if job:
+            icon = {"done": "✅", "failed": "❌",
+                    "cancelled": "⚠️"}.get(job["status"], "ℹ️")
+            st.caption(f"{icon} Last job #{job['id']} ({job['status']}): "
+                       f"{job['message'] or 'no summary'}")
+        col_n, col_b = st.columns([1, 1])
+        with col_n:
+            n_leads = st.number_input("Leads to source", min_value=1,
+                                      max_value=10000, value=500, step=100)
+        with col_b:
+            st.markdown("<br>", unsafe_allow_html=True)  # align with the input
+            if st.button("🚀 Source & enrich in the cloud", type="primary",
+                         use_container_width=True):
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "INSERT INTO pipeline_jobs (job_type, requested, status, "
+                        "requested_by, created_at, updated_at) VALUES "
+                        "('source_enrich', :n, 'pending', :u, now(), now())"
+                    ), {"n": int(n_leads),
+                        "u": st.session_state.get("username", "")})
+                _clear_admin_caches()
+                st.rerun()
+
+    st.divider()
+
     # --- SECTION 1: THE PIPELINE CONTROLS ---
     st.markdown("### 🛠️ Data Pipeline Operations")
     col1, col2, col3 = st.columns(3)
