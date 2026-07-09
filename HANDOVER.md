@@ -52,6 +52,7 @@ leaderboard, lead_card} → app`.
 | `ae_dashboard.py` | **My Pipeline** (`render_ae_pipeline`): classify cards, `classify_lead` |
 | `ae_home.py` | **AE Dashboard** (personal: pipeline count, into-Salesforce, points, change password) |
 | `admin_panel.py` | **Admin Control Center**: cloud source+enrich job queue, clear buttons, **qualification-bar slider**, team top-up allocation, pipeline-health metrics (`screened_out` / `qualified`) |
+| `analytics_dashboard.py` | **Analytics** page (admin-only, read-only, `render_analytics`): ML-readiness gauge (labelled leads needed before training `score_lead` — counts `screening_log` ⋈ `ml_pipeline_analytics`), lead funnel, screen-out reasons, score-vs-approval calibration, enrichment coverage |
 | `leaderboard.py` | AE leaderboard + `compute_points` |
 | `lead_card.py` | **Shared `render_profile`** (the Tinder/Revolut card); `_size_chip` uses `scoring.account_tier` |
 | `sic_data.py` | SIC code reference dict + loader + cached `get_sic_lookup` |

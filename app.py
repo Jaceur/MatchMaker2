@@ -18,6 +18,7 @@ import swipe_page
 import ae_dashboard
 import ae_home
 import admin_panel
+import analytics_dashboard
 import leaderboard
 import new_incorps_page
 
@@ -91,7 +92,7 @@ else:
             "High Quality New Incorps",
         ]
         if st.session_state.role == 'admin':
-            nav_options.append("Admin Dashboard")
+            nav_options += ["Analytics", "Admin Dashboard"]
         page_selection = st.radio("Navigation", nav_options)
 
         st.divider()
@@ -111,6 +112,11 @@ else:
         leaderboard.render_leaderboard(engine)
     elif page_selection == "High Quality New Incorps":
         new_incorps_page.render(engine, st.session_state.role)
+    elif page_selection == "Analytics":
+        if st.session_state.role == 'admin':  # check at the door, not just hide the button
+            analytics_dashboard.render_analytics(engine)
+        else:
+            st.error("You don't have permission to view this page.")
     elif page_selection == "Admin Dashboard":
         if st.session_state.role == 'admin':  # check at the door, not just hide the button
             admin_panel.render_dashboard(engine)
