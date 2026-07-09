@@ -13,12 +13,6 @@ from database import engine
 from models import sales_leads, pipeline_archive, ae_stats
 from settings import get_qualify_bar
 
-# Enriched leads scoring AT OR BELOW this are "Tier 4" — held back from AEs until
-# the scoring model is good enough to lower the bar. Allocation and the swipe
-# queue only surface leads scoring strictly ABOVE it. Lower this one number to
-# release more leads; no data moves.
-TIER_THRESHOLD = 60
-
 
 # ==========================================
 # FEATURE ENGINEERING
@@ -84,37 +78,6 @@ def get_pending_leads(ae_username):
                       sales_leads.c.confidence_score.desc())
         )
         return [dict(row) for row in conn.execute(query).mappings().fetchall()]
-
-
-# ==========================================
-# ADMIN MUTATIONS
-# ==========================================
-def assign_leads_to_ae(username, num_leads):
-    print(f"Assigning {num_leads} leads to {username}...")
-    bar = get_qualify_bar()
-    with engine.begin() as connection:
-        # Grab the best-fit unassigned leads that clear the qualification bar.
-        assign_query = text("""
-            UPDATE sales_leads
-            SET assigned_ae_username = :username,
-                assigned_date = :now
-            WHERE id IN (
-                SELECT id FROM sales_leads
-                WHERE status = 'ready_for_swipe' AND assigned_ae_username IS NULL
-                  AND lead_score >= :bar
-                ORDER BY lead_score DESC, confidence_score DESC
-                LIMIT :limit
-            )
-        """)
-
-        result = connection.execute(assign_query, {
-            "username": username,
-            "now": datetime.utcnow(),
-            "limit": num_leads,
-            "bar": bar,
-        })
-
-        return result.rowcount
 
 
 # ==========================================

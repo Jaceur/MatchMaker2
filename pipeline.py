@@ -161,12 +161,3 @@ def run_pipeline(limit=None, progress_callback=None):
 
     print("\nStaged pipeline complete!")
     return done
-
-
-def run_enrichment_pipeline(progress_callback=None, limit=25):
-    """Entry point for the admin 'Run Enrichment' button — runs the staged
-    pipeline on a small batch (capped low, since the full pipeline incl. accounts
-    parsing is slow per lead; run big batches locally via enrich_local.py).
-    Returns a summary string for the UI."""
-    count = run_pipeline(limit=limit, progress_callback=progress_callback)
-    return f"Pipeline complete — {count} leads screened/enriched."

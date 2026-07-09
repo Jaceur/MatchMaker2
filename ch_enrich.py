@@ -172,14 +172,6 @@ def _apply_events_txn(conn, company_number, new_events):
                   base + ch_scoring.WEIGHTS["event_bonus"], 1, breakdown)
 
 
-def apply_event(company_number, event_type, detail):
-    """Record ONE trigger event and promote the company to Tier 1. Used by the
-    optional /filings stream listener (ch_stream.py). The REST path below
-    (sweep_events) is the default and does its own de-duplication."""
-    with engine.begin() as conn:
-        _apply_events_txn(conn, company_number, [(event_type, detail)])
-
-
 # ---------------------------------------------------------------------------
 # Event triggers via REST (the default path)
 # ---------------------------------------------------------------------------

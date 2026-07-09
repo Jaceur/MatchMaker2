@@ -2,9 +2,7 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import text
 
-from sourcing import run_sourcing_pipeline
-from pipeline import run_enrichment_pipeline
-from leads import clear_all_data, clear_pipeline_data, assign_leads_to_ae, top_up_allocation
+from leads import clear_all_data, clear_pipeline_data, top_up_allocation
 from settings import (
     get_qualify_percent, set_qualify_percent, qualify_percent_to_bar, get_qualify_bar,
 )
@@ -23,13 +21,6 @@ def _save_qualify_bar():
 # These power the dashboard's read-only panels. Cached so the page doesn't
 # re-query the DB on every button click / rerun; the pipeline actions below call
 # _clear_admin_caches() so the numbers refresh immediately after a mutation.
-@st.cache_data(ttl=120)
-def _get_user_list(_engine):
-    with _engine.connect() as conn:
-        df = pd.read_sql("SELECT username FROM users", conn)
-    return df['username'].tolist() if not df.empty else ["No AEs found"]
-
-
 @st.cache_data(ttl=120)
 def _get_pipeline_stats(_engine):
     """All Pipeline Health counts in one round-trip. 'Screened out' = leads the
@@ -107,33 +98,9 @@ def _get_leads_preview(_engine):
 
 def _clear_admin_caches():
     """Invalidate every dashboard read after a mutating action."""
-    _get_user_list.clear()
     _get_pipeline_stats.clear()
     _get_ae_performance.clear()
     _get_leads_preview.clear()
-
-
-@st.fragment
-def _allocation_controls(user_list, unassigned_count):
-    """Lead-assignment controls. Changing the AE or the lead count reruns only
-    this fragment, so the heavier metrics / AE-performance / preview queries
-    further down the page don't re-run on every tweak. Actually assigning leads
-    escalates to a full-app rerun to refresh those metrics."""
-    col_a, col_b, col_c = st.columns([2, 2, 1])
-    with col_a:
-        selected_ae = st.selectbox("Select Account Executive", user_list)
-    with col_b:
-        num_leads = st.number_input("Number of Leads", min_value=1, max_value=500, value=10)
-    with col_c:
-        st.markdown("<br>", unsafe_allow_html=True)  # Aligns the button with the inputs
-        if st.button("Assign Leads", type="primary", use_container_width=True):
-            if unassigned_count == 0:
-                st.error("No unassigned leads available in the pool!")
-            else:
-                assigned = assign_leads_to_ae(selected_ae, num_leads)
-                _clear_admin_caches()
-                st.success(f"Successfully assigned {assigned} leads to {selected_ae}!")
-                st.rerun(scope="app")  # Refresh the page to update the metrics
 
 
 def render_dashboard(engine):
@@ -249,37 +216,17 @@ def render_dashboard(engine):
 
     # --- SECTION 1: THE PIPELINE CONTROLS ---
     st.markdown("### 🛠️ Data Pipeline Operations")
-    col1, col2, col3 = st.columns(3)
+    st.caption(
+        "Sourcing + enrichment run via the **Cloud Sourcing & Enrichment** job "
+        "above (or locally with `python enrich_local.py`)."
+    )
 
-    with col1:
-        if st.button("📡 Run Sourcing API", use_container_width=True):
-            with st.spinner("Querying Companies House..."):
-                run_sourcing_pipeline()
-            _clear_admin_caches()
-            st.success("New leads sourced!")
-
-    with col2:
-        if st.button("🧠 Run Enrichment", use_container_width=True):
-            progress_bar = st.progress(0.0, text="Starting enrichment...")
-
-            def _on_progress(done, total, company_name):
-                progress_bar.progress(
-                    done / total if total else 1.0,
-                    text=f"Enriched {done}/{total} — {company_name}",
-                )
-
-            summary = run_enrichment_pipeline(progress_callback=_on_progress)
-            progress_bar.empty()
-            _clear_admin_caches()
-            st.success(summary)
-
-    with col3:
-        if st.button("🛑 Clear Database", use_container_width=True,
-                     help="Clears the sourcing/working pool. Approved pipeline leads are preserved."):
-            with st.spinner("Clearing working pool..."):
-                summary = clear_all_data()
-            _clear_admin_caches()
-            st.warning(summary)
+    if st.button("🛑 Clear Database", use_container_width=True,
+                 help="Clears the sourcing/working pool. Approved pipeline leads are preserved."):
+        with st.spinner("Clearing working pool..."):
+            summary = clear_all_data()
+        _clear_admin_caches()
+        st.warning(summary)
 
     # --- CLEAR PIPELINE (destructive — two-step confirmation) ---
     if st.session_state.get("confirm_clear_pipeline"):
@@ -302,17 +249,6 @@ def render_dashboard(engine):
                      help="Archives approved leads to pipeline_archive, then clears them from the live pipeline."):
             st.session_state.confirm_clear_pipeline = True
             st.rerun()
-
-    st.divider()
-
-    # --- SECTION 1.5: MANUAL LEAD ALLOCATION ---
-    st.markdown("### 🎯 Manual Lead Allocation")
-
-    user_list = _get_user_list(engine)
-
-    st.caption(f"Qualified leads awaiting allocation: **{stats['awaiting_allocation']}**")
-
-    _allocation_controls(user_list, stats['awaiting_allocation'])
 
     st.divider()
 

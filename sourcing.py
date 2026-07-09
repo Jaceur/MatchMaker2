@@ -1,13 +1,10 @@
 """Sourcing: pull fresh companies from the Companies House API into the pool.
 
-Two entry points:
-  - run_sourcing_pipeline()  — the original admin button: ONE random incorporation
-    date -> up to 100 new leads.
-  - source_leads(count, ...) — batched version used by the Railway lead worker:
-    keeps rolling fresh random dates (one date per ~100-lead batch — the
-    advanced-search endpoint returns at most 100 per call, so this is the
-    lightest way to keep the random-date behaviour) until `count` NEW leads are
-    in the pool or the attempt budget runs out.
+`source_leads(count, ...)` is the entry point (used by the Railway lead worker):
+it keeps rolling fresh random incorporation dates (one date per ~100-lead batch —
+the advanced-search endpoint returns at most 100 per call, so this is the
+lightest way to keep the random-date behaviour) until `count` NEW leads are in
+the pool or the attempt budget runs out.
 """
 import random
 import time
@@ -74,24 +71,6 @@ def _random_date():
     return datetime.now() - timedelta(days=random.randint(*DATE_RANGE_DAYS))
 
 
-def fetch_and_store_random_batch(max_attempts=10):
-    """The original one-shot: roll random dates until one yields leads (or the
-    attempt budget runs out). Returns net new rows."""
-    for attempt in range(1, max_attempts + 1):
-        target = _random_date()
-        print(f"Attempt {attempt}/{max_attempts}: targeting incorporation date "
-              f"{target.strftime('%Y-%m-%d')}...")
-        new_rows = _fetch_one_date(target)
-        if new_rows is None:
-            return 0                   # hard API error — give up politely
-        if new_rows > 0:
-            print(f"Successfully loaded {new_rows} net new rows into sales_leads.")
-            return new_rows
-        time.sleep(0.5)                # be polite to the API between retries
-    print(f"Gave up after {max_attempts} attempts with no results.")
-    return 0
-
-
 def source_leads(count, progress_callback=None, should_stop=None):
     """Source ~`count` net-new leads, one fresh random date per batch of up to
     100. Dates that duplicate existing leads or land on quiet days just roll
@@ -117,9 +96,3 @@ def source_leads(count, progress_callback=None, should_stop=None):
             progress_callback(min(sourced, count), count)
         time.sleep(0.5)                # be polite to the API between calls
     return sourced
-
-
-def run_sourcing_pipeline():
-    print("UI Triggered: Sourcing Pipeline...")
-    new_rows = fetch_and_store_random_batch()
-    return f"Sourcing complete! {new_rows} new leads added."

@@ -501,8 +501,8 @@ except Exception as _e:
     print(f"screening_log migration skipped: {_e}")
 
 # Indexes for the columns the latency-sensitive queries filter and sort by: the
-# swipe queue (get_pending_leads) and lead allocation (assign_leads_to_ae) both
-# filter on status + assigned_ae_username and order by confidence_score, none of
+# swipe queue (get_pending_leads) and lead allocation (top_up_allocation) both
+# filter on status + assigned_ae_username and order by score, none of
 # which was indexed — so each query scanned the whole table. As with the columns
 # above, create_all won't add an index to an existing table, so do it idempotently.
 # CREATE INDEX IF NOT EXISTS is a no-op once the index exists; it adds no data,

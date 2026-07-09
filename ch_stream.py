@@ -1,20 +1,14 @@
-"""Companies House Streaming API listeners for the CH Lead Engine.
+"""Companies House Streaming API listener for the CH Lead Engine.
 
 Long-running process (run in its own terminal / service — NOT part of the
 Streamlit app and can't run on Streamlit Cloud):
 
-    python ch_stream.py companies   # new incorporations -> ch_queue   <-- USE THIS
+    python ch_stream.py companies   # new incorporations -> ch_queue
 
 This is the ONLY stream this project uses: real-time NEW INCORPORATIONS. The
 SH01/MR01 trigger events are detected over plain REST instead (ch_enrich
 .sweep_events, run by ch_run_local.py) — so there's just one streaming process
 to keep alive, and no second stream key budget to worry about.
-
-    python ch_stream.py filings     # OPTIONAL / not recommended
-
-The /filings listener still exists for anyone who wants events in real time,
-but DON'T run it alongside the REST sweep or the same event can be recorded
-twice (the stream path doesn't share the sweep's de-dup ref).
 
 Needs CH_STREAM_KEY in .streamlit/secrets.toml (or the environment) — a
 SEPARATE key from CH_API_KEY, requested in the CH developer hub under
@@ -38,23 +32,16 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-import ch_signals
 from ch_client import get_secret
-from ch_enrich import queue_company, apply_event
+from ch_enrich import queue_company
 from database import engine
-from models import ch_companies, ch_stream_state
+from models import ch_stream_state
 
 STREAM_BASE_URL = "https://stream.companieshouse.gov.uk"
 
 # Only treat a /companies event as a NEW incorporation if it was created in
 # the last N days (the stream also emits updates for existing companies).
 NEW_INCORP_MAX_AGE_DAYS = 10
-
-# Trigger events only fire on already-ingested companies at most this old.
-EVENT_MAX_AGE_MONTHS = 18
-
-# An SH01 counts as a "fresh raise" at/above this allotment (or any non-GBP).
-SH01_MIN_FIGURE = 25000
 
 TIMEPOINT_SAVE_EVERY = 25      # events between ch_stream_state writes
 READ_TIMEOUT = 120             # heartbeats arrive well within this; a silent
@@ -174,91 +161,9 @@ def run_companies_listener():
             seen_since_save = 0
 
 
-# ---------------------------------------------------------------------------
-# /filings — SH01 / MR01 trigger events on tracked young companies
-# ---------------------------------------------------------------------------
-
-def _company_number_from_uri(resource_uri):
-    # e.g. /company/12345678/filing-history/MzM0...
-    parts = [p for p in (resource_uri or "").split("/") if p]
-    return parts[1] if len(parts) >= 2 and parts[0] == "company" else None
-
-
-def _tracked_and_young(conn, company_number):
-    row = conn.execute(
-        select(ch_companies.c.date_of_creation)
-        .where(ch_companies.c.company_number == company_number)
-    ).first()
-    if not row:
-        return False              # not a company we ingested — ignore
-    if not row[0]:
-        return True               # tracked but age unknown: err on acting
-    age_days = (datetime.utcnow().date() - row[0]).days
-    return age_days <= EVENT_MAX_AGE_MONTHS * 31
-
-
-def _classify_filing(data):
-    """('sh01_raise'|'mr01_charge'|None, detail) for one filing event."""
-    ftype = (data.get("type") or "").upper()
-    description = data.get("description") or ""
-    category = data.get("category") or ""
-
-    if ftype == "SH01" or "capital-allotment" in description:
-        capital = ch_signals._capital_entries(data.get("description_values"))
-        qualifying = [
-            c for c in capital
-            if (c["currency"] and c["currency"] != "GBP")
-            or c["figure"] >= SH01_MIN_FIGURE
-        ]
-        # An SH01 with no parseable capital still gets flagged: someone chose
-        # to allot new shares, which is the trigger we care about.
-        if qualifying or not capital:
-            return "sh01_raise", {
-                "flag": "fresh_raise", "description": description,
-                "capital": [{"currency": c["currency"], "figure": str(c["figure"])}
-                            for c in capital],
-                "date": data.get("date"),
-            }
-        return None, None
-
-    if ftype == "MR01" or category == "mortgage":
-        return "mr01_charge", {
-            "flag": "debt_financing", "description": description,
-            "date": data.get("date"),
-        }
-    return None, None
-
-
-def run_filings_listener():
-    seen_since_save = 0
-    fired = 0
-    for event in stream_events("/filings", "filings"):
-        data = event.get("data") or {}
-        timepoint = (event.get("event") or {}).get("timepoint")
-        number = _company_number_from_uri(event.get("resource_uri"))
-
-        if number:
-            event_type, detail = _classify_filing(data)
-            if event_type:
-                with engine.connect() as conn:
-                    relevant = _tracked_and_young(conn, number)
-                if relevant:
-                    apply_event(number, event_type, detail)
-                    fired += 1
-                    print(f"[filings] {event_type} on {number} "
-                          f"— {fired} events this session")
-
-        seen_since_save += 1
-        if timepoint is not None and seen_since_save >= TIMEPOINT_SAVE_EVERY:
-            save_timepoint("filings", timepoint)
-            seen_since_save = 0
-
-
 if __name__ == "__main__":
     which = sys.argv[1].lower() if len(sys.argv) > 1 else ""
     if which == "companies":
         run_companies_listener()
-    elif which == "filings":
-        run_filings_listener()
     else:
-        print("Usage: python ch_stream.py [companies | filings]")
+        print("Usage: python ch_stream.py companies")

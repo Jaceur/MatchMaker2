@@ -42,24 +42,22 @@ leaderboard, lead_card} → app`.
 | `models.py` | **All table schemas** + `create_all` + auto-migration block (`_ADDED_COLUMNS`) |
 | `settings.py` | **Runtime settings stored in the DB** (`app_settings` table). The qualification-bar slider lives here: `get_qualify_bar()` (30–70), `get/set_qualify_percent()` (0–100%) |
 | `scoring.py` | **`score_lead(LeadFeatures) → 0-100` sales-fit score — the ML swap point** (section 6). Also `best_possible_score`, `features_from_mapping`, `account_tier` |
-| `pipeline.py` | **The staged screening pipeline** — `screen_lead` (Stage A/B/C + holdout), `run_pipeline`, `run_enrichment_pipeline` (admin button). Replaces the old first-then-second enrichment split (section 4) |
+| `pipeline.py` | **The staged screening pipeline** — `screen_lead` (Stage A/B/C + holdout), `run_pipeline`. Replaces the old first-then-second enrichment split (section 4) |
 | `enrichment.py` | **Building blocks** used by the pipeline: `clean_company_name`, `fetch_ch_signals` (account_type, director change), `fetch_trade_activity` (HMRC import/export), `fetch_web_presence` (DDG website + LinkedIn), `score_website_match`, `score_linkedin_match`. DDG calls are paced/retried (`_ddg_text`) |
 | `second_enrichment.py` | Parses filed **accounts documents** (iXBRL + PDF/OCR) → `second_enrich_lead(crn)` returns employee count + financials. Called as the pipeline's Stage B |
-| `leads.py` | `get_pending_leads`, `assign_leads_to_ae` (both **gate on `lead_score ≥ get_qualify_bar()`**, order by `lead_score DESC, confidence_score DESC`), `build_ml_row`, `engineer_ml_features`, clear DB / clear pipeline, `award_activity`. (`TIER_THRESHOLD = 60` is **legacy/vestigial** now — allocation no longer uses the confidence tier as a gate) |
+| `leads.py` | `get_pending_leads`, `top_up_allocation` (both **gate on `lead_score ≥ get_qualify_bar()`**, order by `lead_score DESC, confidence_score DESC`), `build_ml_row`, `engineer_ml_features`, clear DB / clear pipeline, `award_activity` |
 | `sourcing.py` | Companies House advanced-search → new `sourced` leads |
 | `directors.py` | CH officers API (3 youngest directors → "First Last"), email-format candidates, `domain_from_url`. `enrich_lead_directors` **preserves `updated_at`** so enriching doesn't bump a My-Pipeline lead to the top |
 | `swipe_page.py` | `main_app` — the swipe card; validity toggles; `pass_control`; correction inputs |
 | `ae_dashboard.py` | **My Pipeline** (`render_ae_pipeline`): classify cards, `classify_lead` |
 | `ae_home.py` | **AE Dashboard** (personal: pipeline count, into-Salesforce, points, change password) |
-| `admin_panel.py` | **Admin Control Center**: sourcing / run-pipeline / clear buttons, **qualification-bar slider**, lead allocation, pipeline-health metrics (`screened_out` / `qualified`) |
+| `admin_panel.py` | **Admin Control Center**: cloud source+enrich job queue, clear buttons, **qualification-bar slider**, team top-up allocation, pipeline-health metrics (`screened_out` / `qualified`) |
 | `leaderboard.py` | AE leaderboard + `compute_points` |
 | `lead_card.py` | **Shared `render_profile`** (the Tinder/Revolut card); `_size_chip` uses `scoring.account_tier` |
 | `sic_data.py` | SIC code reference dict + loader + cached `get_sic_lookup` |
-| `cli.py` | Terminal control panel (source / enrich / clear) |
 | `rescore_leads.py` | **Re-compute `lead_score`** for existing leads from already-stored figures (fast, no internet) — run after a scoring change |
 | `rerun_pipeline.py` | **Full re-run**: reset every non-swiped lead to `sourced` and push it back through the whole pipeline (slow, re-fetches everything) |
 | `enrich_local.py` (+ `.bat`) | **Local** pipeline runner (faster, no cloud timeout; Stage B's OCR is local-only) |
-| `second_enrich_local.py` | Legacy local accounts-only runner (needs poppler + Tesseract for OCR) |
 | `test_accounts.py` | **Diagnostic — keep.** Dumps one company's accounts iXBRL tags for debugging the parser |
 
 ## 3. Database tables
@@ -204,9 +202,7 @@ out instead of clamping.
 python enrich_local.py [N|all]   # run the staged pipeline locally (CH + accounts + web + score)
 python rescore_leads.py          # re-score existing leads from stored figures (fast, no internet)
 python rerun_pipeline.py         # reset every non-swiped lead and re-run the FULL pipeline (slow)
-python second_enrich_local.py    # legacy accounts-only runner
 python test_accounts.py <CRN>    # dump a company's accounts iXBRL tags (parser diagnostic)
-python cli.py                    # terminal menu: source / enrich / clear
 ```
 
 All write to the same Cloud SQL DB. Don't run a job locally and on the cloud at once (double-processing).
@@ -269,8 +265,8 @@ companies, and holding-co/property-SPV vehicles are down-scored. Surfaced on the
 | `ch_client.py` | REST client: auth, **shared 550-per-5-min rate limiter**, retries. Smoke test: `python ch_client.py 00000006` |
 | `ch_signals.py` | **Pure** signal detection: capital parsing (incl. `associated_filings` fallback), address normalisation + seed formation-agent list, SIC/PSC/officer rules, SPV-farm + quality-director patterns |
 | `ch_scoring.py` | **Pure** scoring: the one `WEIGHTS` dict, tiers, event bonus, `top_signals` |
-| `ch_enrich.py` | Drain `ch_queue`: fetch profile/PSC/officers/filings, PSC-lag recheck (young co, empty PSC → retry in 48h), serial-director lookups (capped), persist + score. **`sweep_events` = the REST SH01/MR01 detector** (2 calls/company, de-duped by `ref`) that promotes to Tier 1 — the chosen alternative to the /filings stream. `apply_event` = the same promotion for the optional stream path |
-| `ch_stream.py` | **`python ch_stream.py companies`** — the ONE long-running listener we use (real-time new incorps → queue; timepoint resume via `ch_stream_state`; **needs CH_STREAM_KEY**). `filings` exists but is optional/not-recommended — REST (`sweep_events`) covers events; don't run both or events double-record |
+| `ch_enrich.py` | Drain `ch_queue`: fetch profile/PSC/officers/filings, PSC-lag recheck (young co, empty PSC → retry in 48h), serial-director lookups (capped), persist + score. **`sweep_events` = the REST SH01/MR01 detector** (2 calls/company, de-duped by `ref`) that promotes to Tier 1 — this is the only event path |
+| `ch_stream.py` | **`python ch_stream.py companies`** — the ONE long-running listener (real-time new incorps → queue; timepoint resume via `ch_stream_state`; **needs CH_STREAM_KEY**). Trigger events come from REST (`sweep_events`), not a filings stream |
 | `ch_backfill.py` | `python ch_backfill.py [days] [cap]` — REST ingest via advanced search, **no stream key needed**. The fallback/alternative to the companies stream |
 | `ch_run_local.py` | `python ch_run_local.py [N\|all]` — cron entrypoint: drains the queue **then runs the REST event sweep** (mirrors enrich_local.py) |
 | `ch_digest.py` | `python ch_digest.py [hours\|all]` — Tier 1/2 digest → `digests/*.md/.csv`; also feeds the page's download buttons |

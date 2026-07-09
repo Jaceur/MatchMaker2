@@ -1,15 +1,16 @@
 """Second enrichment — pull figures from a company's filed accounts document.
 
-For each Tier 3 lead we: find the most recent 'accounts' (AA) filing in the
+For each lead we: find the most recent 'accounts' (AA) filing in the
 Companies House filing history, follow its document_metadata to the Document
 API, download the iXBRL (preferred) or PDF, and extract fields.
 
-Today we extract employee count. To add a field later, add ONE entry to
-ACCOUNTS_FIELDS — `concepts` are matched against iXBRL tag names, `pattern` is a
-regex run over PDF text. Nothing else changes.
+To add a field later, add ONE entry to ACCOUNTS_FIELDS — `concepts` are matched
+against iXBRL tag names, `pattern` is a regex run over PDF text. Nothing else
+changes.
 
-This runs locally (it uses Tesseract/poppler for scanned PDFs), not on the
-Streamlit app — see second_enrich_local.py.
+Called by pipeline.py as Stage B (`second_enrich_lead`). The OCR fallback for
+scanned PDFs needs the poppler + tesseract binaries, so run big batches locally
+or on the Railway worker.
 """
 import io
 import os
@@ -17,14 +18,7 @@ import re
 import time
 
 import requests
-import streamlit as st
 from bs4 import BeautifulSoup
-from sqlalchemy import select, update
-
-from database import engine
-from models import sales_leads
-from leads import TIER_THRESHOLD
-from scoring import score_lead, features_from_mapping
 
 CH_FILING_URL = "https://api.company-information.service.gov.uk/company/{crn}/filing-history"
 
@@ -358,41 +352,3 @@ def second_enrich_lead(crn):
         if isinstance(v, float):
             result[k] = int(round(v))
     return result
-
-
-def second_enrich_tier3(limit=None, progress_callback=None):
-    """Process Tier 3 leads (confidence above the threshold, already first-
-    enriched) that haven't been second-enriched yet. Returns how many were done."""
-    with engine.connect() as conn:
-        query = select(sales_leads).where(
-            (sales_leads.c.status != 'sourced')
-            & (sales_leads.c.confidence_score > TIER_THRESHOLD)
-            & (sales_leads.c.second_enriched.isnot(True))
-        )
-        if limit is not None:
-            query = query.limit(limit)
-        records = conn.execute(query).mappings().fetchall()
-
-    total = len(records)
-    if not records:
-        print("No Tier 3 leads need second enrichment.")
-        return 0
-
-    print(f"Second-enriching {total} Tier 3 lead(s)...")
-    done = 0
-    for rec in records:
-        print(f"\n[{done + 1}/{total}] {rec['company_name']} ({rec['crn']})")
-        data = second_enrich_lead(rec['crn'])
-        # The financials now exist, so recompute the fit score from the full
-        # picture: the cheap signals already on the row + the new figures.
-        lead_score = score_lead(features_from_mapping({**dict(rec), **data}))
-        with engine.begin() as conn:
-            conn.execute(
-                update(sales_leads)
-                .where(sales_leads.c.id == rec['id'])
-                .values(second_enriched=True, lead_score=lead_score, **data)
-            )
-        done += 1
-        if progress_callback:
-            progress_callback(done, total, rec['company_name'], data)
-    return done
