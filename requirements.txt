@@ -1,15 +1,22 @@
-streamlit
-pg8000
-sqlalchemy
-requests
-ddgs
-beautifulsoup4
-pandas
-bcrypt
-rapidfuzz
-extra-streamlit-components
+# Pinned to the versions that were resolved on the Streamlit Cloud deploy
+# (Python 3.14). Nothing here was pinned before, so every redeploy silently
+# pulled the latest of each package — meaning the app could break with no code
+# change at all. These are the exact versions from the current build (all have
+# Python 3.14 wheels), so a redeploy is now reproducible. Bump on purpose, one
+# at a time, not by accident.
+streamlit==1.59.1
+extra-streamlit-components==0.1.81   # cookie manager; needs streamlit>=1.40.1
+pg8000==1.31.5
+sqlalchemy==2.0.51
+requests==2.34.2
+ddgs==9.14.4
+beautifulsoup4==4.15.0
+pandas==3.0.3
+bcrypt==5.0.0
+rapidfuzz==3.14.5
+
 # Second enrichment (local accounts parsing). pdf2image needs the poppler binary
 # and pytesseract needs the tesseract binary installed on the machine running it.
-pdfplumber
-pdf2image
-pytesseract
+pdfplumber==0.11.10
+pdf2image==1.17.0
+pytesseract==0.3.13
