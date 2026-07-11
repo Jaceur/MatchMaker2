@@ -1,0 +1,18 @@
+# Keep the API image small and secret-free. The frontend and the local venv are
+# irrelevant to the API; secrets come from Railway env vars, never the image.
+.venv-api/
+venv/
+.venv/
+frontend/
+node_modules/
+**/__pycache__/
+*.pyc
+.git/
+.github/
+.streamlit/secrets.toml
+api/.env
+*.zip
+digests/
+lead_score_distribution.png
+.pytest_cache/
+.ruff_cache/
