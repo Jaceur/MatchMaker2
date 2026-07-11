@@ -1,0 +1,42 @@
+# Render Blueprint for the Matchmaker 2.0 API (FastAPI).
+#
+# Deploy: Render dashboard -> New -> Blueprint -> pick the react-rebuild branch of
+# Jaceur/MatchMaker2. Render reads this file and creates the service. Then set the
+# secret env vars (the ones marked `sync: false`) in the dashboard.
+#
+# Why the explicit buildCommand: the repo-root requirements.txt is the STREAMLIT
+# app's deps (Starlette 1.x); the API needs its own isolated set (Starlette 0.41,
+# no Streamlit). Installing only api/requirements.txt keeps them from colliding.
+# The service still runs from the repo root so `import scoring`, `import leads`,
+# etc. resolve against the shared modules.
+
+services:
+  - type: web
+    name: matchmaker-api
+    runtime: python
+    plan: free
+    branch: react-rebuild
+    rootDir: .
+    buildCommand: pip install -r api/requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      # Pin a Python with wheels for all deps (avoids source builds on the host).
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      # --- Secrets: set these in the Render dashboard (never commit them) ---
+      - key: DB_PASSWORD
+        sync: false
+      - key: SUPABASE_HOST
+        sync: false
+      - key: SUPABASE_USER
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false # e.g. https://your-app.vercel.app
+      # --- Non-secret DB settings ---
+      - key: SUPABASE_PORT
+        value: "5432"
+      - key: SUPABASE_DBNAME
+        value: postgres
