@@ -5,8 +5,12 @@
 # The whole repo is still copied in, so the API imports the shared project-root
 # modules (scoring, leads, pipeline, directors, settings, leaderboard) directly.
 #
-# Only used by services that deploy from the react-rebuild branch — the worker on
-# main keeps using Nixpacks + the root requirements.txt, untouched.
+# NAMED `Dockerfile.api` (not `Dockerfile`) ON PURPOSE: Railway only auto-detects
+# a file called `Dockerfile`, and BOTH the API and the worker build from this repo.
+# A root `Dockerfile` would be applied to the worker too and break it (no Streamlit
+# + a /health check it can't answer). So this is referenced explicitly by
+# `railway.api.json`, which ONLY the API service points at — the worker keeps
+# building with Nixpacks + the root requirements.txt, untouched.
 
 FROM python:3.12-slim
 

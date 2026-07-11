@@ -15,15 +15,19 @@ untouched — this only adds a new service that deploys from `react-rebuild`.
 
 ## 1. API on Railway
 
-The repo has a root `Dockerfile` + `railway.json`, so Railway builds the API
-deterministically (no Nixpacks, no accidental Streamlit install).
+The API build is defined by **`Dockerfile.api`** + **`railway.api.json`** — named
+so they are NOT auto-detected repo-wide. This matters because the worker builds
+from the same repo: a plain root `Dockerfile`/`railway.json` would be applied to
+the worker too and break it (no Streamlit, plus a `/health` check it can't answer).
+The worker keeps building with Nixpacks + the root `requirements.txt`, untouched.
 
 1. Railway → your existing project → **New → GitHub Repo** → `Jaceur/MatchMaker2`.
-2. Open the new service → **Settings → Source**:
-   - **Branch:** `react-rebuild`
-   - **Root Directory:** *(leave blank — repo root; the Dockerfile needs the shared
-     modules that live there)*
-   - Railway detects the `Dockerfile` automatically (builder shows "Dockerfile").
+   This creates a **new, separate service** — do not reconfigure the worker.
+2. Open the new service → **Settings**:
+   - **Source → Branch:** `react-rebuild`; **Root Directory:** *(leave blank — repo
+     root; the build needs the shared modules that live there)*
+   - **Config-as-code → Railway Config File:** set the path to **`railway.api.json`**.
+     (This is the key step — it tells *this* service to use `Dockerfile.api`.)
 3. **Variables** tab → add:
 
    | Key | Value |
@@ -43,6 +47,13 @@ deterministically (no Nixpacks, no accidental Streamlit install).
    `…/docs` for the interactive API.
 
 Unlike a free Render service, this stays warm — no cold-start delay.
+
+### The existing worker
+The `lead_worker` service needs **no changes**: it builds with Nixpacks from the
+root `requirements.txt` (which includes Streamlit) and runs `python lead_worker.py`
+via the `Procfile`. Because the API build files use non-default names, the worker
+is unaffected whether it deploys from `main` or `react-rebuild`. If a bad build
+already broke it, just **redeploy** it after this change and it recovers.
 
 ---
 
