@@ -3,8 +3,18 @@
 // - Attaches the stored Bearer token to every request.
 // - Throws ApiError on non-2xx so callers can try/catch; 204 returns null.
 
-const BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://localhost:8000";
+// Normalise the configured API URL: trim, drop any trailing slash, and — the
+// important bit — prepend https:// if the scheme was omitted. Without a scheme
+// the browser treats the value as a *relative path* and posts to the Vercel
+// origin instead of the API, yielding a confusing 404.
+function normalizeBaseUrl(raw?: string): string {
+  const value = raw?.trim();
+  if (!value) return "http://localhost:8000";
+  const noTrailing = value.replace(/\/$/, "");
+  return /^https?:\/\//i.test(noTrailing) ? noTrailing : `https://${noTrailing}`;
+}
+
+const BASE_URL = normalizeBaseUrl(process.env.NEXT_PUBLIC_API_URL);
 
 const TOKEN_KEY = "mm_token";
 
