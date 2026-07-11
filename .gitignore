@@ -226,3 +226,7 @@ frontend/.next/
 frontend/out/
 frontend/.env*.local
 npm-debug.log*
+
+# The Python "lib/" ignore above also matched the Next.js frontend source dir
+# (frontend/src/lib) — re-include it so the API client/auth/types get committed.
+!frontend/src/lib/
