@@ -15,10 +15,29 @@ cleanly on the deploy env's bleeding-edge Python.
 """
 import os
 import ssl
+import functools
 
-import streamlit as st
+# Streamlit is optional: the web app has it, but the FastAPI backend and the
+# headless workers import this module without it. When it's absent we fall back
+# to environment variables for config and a plain singleton for the engine.
+try:
+    import streamlit as st
+except ImportError:
+    # Not installed (the API/workers), or installed but unimportable here (e.g. a
+    # Starlette version pinned for FastAPI that this Streamlit build rejects).
+    # Either way: treat Streamlit as absent and use env vars + a plain singleton.
+    st = None
+
 from sqlalchemy import create_engine, MetaData
 from sqlalchemy.engine import URL
+
+
+def _cache_resource(func):
+    """Use Streamlit's cache_resource when running inside Streamlit (so the whole
+    app shares one engine across reruns); otherwise a plain lru_cache singleton."""
+    if st is not None:
+        return st.cache_resource(show_spinner=False)(func)
+    return functools.lru_cache(maxsize=1)(func)
 
 
 def _conn_params():
@@ -29,7 +48,10 @@ def _conn_params():
     DBNAME."""
     def secret(section, key=None):
         # st.secrets raises if there's no secrets file at all — treat any miss
-        # as "not set here, look at the environment instead".
+        # as "not set here, look at the environment instead". Without Streamlit
+        # (the API / workers) there are no secrets at all: go straight to env.
+        if st is None:
+            return None
         try:
             return st.secrets[section][key] if key else st.secrets[section]
         except Exception:
@@ -53,7 +75,7 @@ def _conn_params():
 # even though `engine` is imported across many pages. show_spinner=False keeps
 # it quiet when imported OUTSIDE Streamlit (the ch_worker.py headless worker),
 # where drawing a spinner has no session and would otherwise log errors.
-@st.cache_resource(show_spinner=False)
+@_cache_resource
 def get_backend_engine():
     # Structured fields (not a single URL string) so a password containing
     # symbols like @ : / ? # can't corrupt the connection string — URL.create

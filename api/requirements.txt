@@ -1,0 +1,29 @@
+# Standalone dependency set for the API service. Deliberately does NOT include
+# Streamlit: this build of Streamlit needs Starlette 1.x while FastAPI needs
+# Starlette 0.41.x, so the API runs in its own environment (its own venv locally,
+# its own service in prod). The shared logic modules import cleanly without
+# Streamlit thanks to the optional-import guards in database.py / leaderboard.py.
+#
+# Install into a dedicated venv:
+#   python -m venv .venv-api
+#   .venv-api\Scripts\pip install -r api/requirements.txt   (Windows)
+#   .venv-api/bin/pip install -r api/requirements.txt        (macOS/Linux)
+
+# --- Shared runtime deps (same pins as the project-root requirements.txt) ---
+pg8000==1.31.5
+sqlalchemy==2.0.51
+requests==2.34.2
+pandas==3.0.3
+bcrypt==5.0.0
+
+# --- API framework & auth ---
+# fastapi 0.139 pulls Starlette 1.x, whose Router breaks include_router on 3.14;
+# pin the 0.115 / Starlette-0.41 pair that works.
+fastapi==0.115.6
+starlette==0.41.3
+uvicorn[standard]==0.49.0
+pydantic==2.12.5
+pydantic-settings==2.14.2
+PyJWT==2.13.0
+python-multipart==0.0.32
+python-dotenv==1.0.1

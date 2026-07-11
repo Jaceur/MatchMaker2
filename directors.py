@@ -7,7 +7,6 @@ the same CH_API_KEY secret the sourcing pipeline already relies on.
 from urllib.parse import urlparse
 
 import requests
-import streamlit as st
 from sqlalchemy import update
 
 from database import engine

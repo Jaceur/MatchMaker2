@@ -3,9 +3,24 @@
 Points are derived from the raw per-AE counters in ae_stats (written by
 leads.award_activity as AEs work). Tune the weights here.
 """
-import streamlit as st
+# Streamlit is optional: the FastAPI backend imports compute_points() from this
+# module without Streamlit installed. The UI helpers below still need it.
+try:
+    import streamlit as st
+except ImportError:
+    st = None
 import pandas as pd
 from sqlalchemy import text
+
+
+def _cache_data(**_kwargs):
+    """Passthrough stand-in for st.cache_data when Streamlit isn't present."""
+    def decorator(func):
+        return func
+    return decorator
+
+
+_cache = st.cache_data if st is not None else _cache_data
 
 POINTS_PER_URL = 25            # each URL an AE adds/corrects
 POINTS_PER_SAVE = 50          # each lead saved into Salesforce
@@ -22,7 +37,7 @@ def compute_points(urls_added, leads_swiped, leads_saved):
     )
 
 
-@st.cache_data(ttl=60)
+@_cache(ttl=60)
 def _get_leaderboard(_engine):
     """All AEs (admins excluded) with their raw activity counts; 0 if no activity."""
     query = text("""
