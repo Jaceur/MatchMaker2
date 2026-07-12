@@ -30,8 +30,11 @@ class TokenResponse(BaseModel):
 # ---------- Swipe actions ----------
 class PassRequest(BaseModel):
     rejection_reason: str
-    website_valid: bool = False
-    linkedin_valid: bool = False
+    # Sources aren't validated on the pass path anymore (an AE binning a lead
+    # won't meaningfully check its website), so these stay null = "not asked"
+    # rather than a misleading False. Kept optional for backward compatibility.
+    website_valid: Optional[bool] = None
+    linkedin_valid: Optional[bool] = None
     corrected_website_url: Optional[str] = None
     corrected_linkedin_url: Optional[str] = None
     dwell_time_seconds: Optional[int] = None
