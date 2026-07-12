@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { motion } from "motion/react";
 import { api, ApiError } from "@/lib/api";
 import type { Lead } from "@/lib/types";
 import {
@@ -81,41 +82,46 @@ export default function SwipePage() {
       ) : (
         <>
           <div className="relative mx-auto w-full max-w-[420px]">
-            {/* Preloaded next cards, stacked behind (deepest first) */}
-            {peeks
-              .slice()
-              .reverse()
-              .map((lead, idx) => {
-                const depth = peeks.length - idx; // 2 for the furthest, 1 for the nearest
-                return (
-                  <div
-                    key={lead.id}
-                    aria-hidden
-                    className="pointer-events-none absolute inset-x-0 top-0"
-                    style={{
-                      transformOrigin: "top center",
-                      transform: `scale(${1 - depth * 0.04}) translateY(${depth * 10}px)`,
-                      zIndex: 10 - depth,
-                      opacity: 0.6,
-                    }}
-                  >
-                    <Card className="overflow-hidden">
-                      <LeadProfile lead={lead} />
-                    </Card>
-                  </div>
-                );
-              })}
+            {/* Preloaded next cards — offset right + faded so the deck is visible.
+                When the top card leaves, each springs forward to its new depth. */}
+            {peeks.map((lead, i) => {
+              const depth = i + 1; // 1 = nearest, 2 = furthest
+              return (
+                <motion.div
+                  key={lead.id}
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-0 top-0"
+                  initial={false}
+                  animate={{
+                    x: depth * 16,
+                    scale: 1 - depth * 0.04,
+                    opacity: depth === 1 ? 0.55 : 0.3,
+                  }}
+                  transition={{ type: "spring", stiffness: 320, damping: 32 }}
+                  style={{ zIndex: 10 - depth }}
+                >
+                  <Card className="overflow-hidden">
+                    <LeadProfile lead={lead} />
+                  </Card>
+                </motion.div>
+              );
+            })}
 
-            {/* Top interactive card */}
-            <div className="relative z-20">
+            {/* Top interactive card — enters from the deck (right + faded) to front */}
+            <motion.div
+              key={current.id}
+              className="relative z-20"
+              initial={{ x: 16, scale: 0.96, opacity: 0.4 }}
+              animate={{ x: 0, scale: 1, opacity: 1 }}
+              transition={{ type: "spring", stiffness: 320, damping: 30 }}
+            >
               <SwipeCard
-                key={current.id}
                 lead={current}
                 busy={false}
                 onPass={(p) => act(current, "pass", p)}
                 onApprove={(p) => act(current, "approve", p)}
               />
-            </div>
+            </motion.div>
           </div>
 
           <p className="mt-4 text-center text-sm text-muted">

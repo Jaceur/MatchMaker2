@@ -10,7 +10,7 @@ import {
 } from "motion/react";
 import type { Lead } from "@/lib/types";
 import { LeadProfile } from "./LeadProfile";
-import { Button, Card, Spinner } from "./ui";
+import { Button, Card, CopyButton, Spinner } from "./ui";
 
 const PASS_REASONS = [
   "Bad Industry",
@@ -88,11 +88,10 @@ function SourceInput({
         </button>
       </div>
       <input
-        value={none ? "" : value}
+        value={value}
         onChange={(e) => onChange(e.target.value)}
-        disabled={none}
         placeholder="https://…"
-        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)] disabled:opacity-50"
+        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
       />
     </div>
   );
@@ -145,6 +144,21 @@ export function SwipeCard({
     });
   }
 
+  function changeUrl(setUrl: (v: string) => void, setNone: (v: boolean) => void) {
+    return (v: string) => {
+      setUrl(v);
+      if (v.trim()) setNone(false); // typing a URL means it's not "none found"
+    };
+  }
+
+  function toggleNone(none: boolean, setNone: (v: boolean) => void, setUrl: (v: string) => void) {
+    return () => {
+      const next = !none;
+      setNone(next);
+      if (next) setUrl(""); // marking "none found" clears whatever was there
+    };
+  }
+
   function doApprove() {
     const finalWeb = webNone ? null : webUrl.trim() || null;
     const finalLi = liNone ? null : liUrl.trim() || null;
@@ -186,6 +200,13 @@ export function SwipeCard({
 
         {/* Sources + decision */}
         <div className="space-y-3 px-5 pb-5 pt-3">
+          <CopyButton
+            text={lead.company_name}
+            copiedLabel="✓ Copied name"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs font-medium text-muted transition hover:border-brand hover:text-brand"
+          >
+            📋 Copy company name
+          </CopyButton>
           <div className="space-y-2">
             <SourceLine icon="🌐" label="Website" url={scrapedWeb} />
             <SourceLine icon="💼" label="LinkedIn" url={scrapedLi} />
@@ -260,16 +281,16 @@ export function SwipeCard({
                   <SourceInput
                     label="🌐 Website"
                     value={webUrl}
-                    onChange={setWebUrl}
+                    onChange={changeUrl(setWebUrl, setWebNone)}
                     none={webNone}
-                    onToggleNone={() => setWebNone((v) => !v)}
+                    onToggleNone={toggleNone(webNone, setWebNone, setWebUrl)}
                   />
                   <SourceInput
                     label="💼 LinkedIn"
                     value={liUrl}
-                    onChange={setLiUrl}
+                    onChange={changeUrl(setLiUrl, setLiNone)}
                     none={liNone}
-                    onToggleNone={() => setLiNone((v) => !v)}
+                    onToggleNone={toggleNone(liNone, setLiNone, setLiUrl)}
                   />
                   <div className="flex gap-3 pt-1">
                     <Button variant="outline" className="flex-1" onClick={() => setMode("idle")}>

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { Lead, DirectorEmails, EmailVerdict } from "@/lib/types";
 import { bareDomain } from "@/lib/format";
-import { Button, Card, Spinner } from "./ui";
+import { Button, Card, CopyButton, Spinner } from "./ui";
 
 // "Won" retired for GDPR → "Existing Account - Already Claimed".
 export const CRM_STATUS_OPTIONS = [
@@ -18,8 +18,6 @@ export const CRM_STATUS_OPTIONS = [
 
 const salesNavSearch = (name: string) =>
   `https://www.linkedin.com/sales/search/company?keywords=${encodeURIComponent(name)}`;
-const businessSearch = (domain: string) =>
-  `https://www.google.com/search?q=${encodeURIComponent(domain)}`;
 const mailmeteor = (email: string) =>
   `https://mailmeteor.com/email-checker?email=${encodeURIComponent(email)}`;
 
@@ -117,7 +115,15 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
         {linkedin && (
           <SearchLink href={salesNavSearch(lead.company_name)}>💼 LinkedIn Search</SearchLink>
         )}
-        {domain && <SearchLink href={businessSearch(domain)}>🔎 Business Search</SearchLink>}
+        {domain && (
+          <CopyButton
+            text={domain}
+            copiedLabel={`✓ Copied ${domain}`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm font-medium transition hover:border-brand hover:text-brand"
+          >
+            🔎 Business Search
+          </CopyButton>
+        )}
         {!linkedin && !domain && <span className="text-sm text-muted">No LinkedIn or website</span>}
       </div>
 

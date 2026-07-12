@@ -1,7 +1,7 @@
 "use client";
 
 // Small shared UI primitives so the pages stay readable and consistent.
-import { forwardRef } from "react";
+import { forwardRef, useState } from "react";
 
 type Variant = "brand" | "success" | "danger" | "ghost" | "outline";
 
@@ -69,6 +69,36 @@ export function Spinner({ className = "" }: { className?: string }) {
     <div
       className={`h-5 w-5 animate-spin rounded-full border-2 border-border border-t-brand ${className}`}
     />
+  );
+}
+
+// Copies `text` to the clipboard and flashes confirmation. Caller supplies the
+// styling via className so it can be a chip, an outline button, etc.
+export function CopyButton({
+  text,
+  children,
+  copiedLabel = "✓ Copied",
+  className = "",
+}: {
+  text: string;
+  children: React.ReactNode;
+  copiedLabel?: React.ReactNode;
+  className?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  }
+  return (
+    <button type="button" onClick={copy} className={className} aria-live="polite">
+      {copied ? copiedLabel : children}
+    </button>
   );
 }
 
