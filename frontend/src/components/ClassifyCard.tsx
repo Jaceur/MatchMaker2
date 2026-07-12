@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { Lead, DirectorEmails, EmailVerdict } from "@/lib/types";
 import { bareDomain } from "@/lib/format";
@@ -48,19 +48,37 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
   const [steps, setSteps] = useState<Record<string, Step>>({});
   const [crm, setCrm] = useState("");
   const [saving, setSaving] = useState(false);
+  const [reenriching, setReenriching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    api
-      .get<DirectorEmails[]>(`/pipeline/${lead.id}/email-candidates`)
-      .then((data) => {
-        setEmails(data);
-        setSteps(
-          Object.fromEntries(data.map((d) => [d.director_name, { idx: 0, acceptedIdx: null }])),
-        );
-      })
-      .catch((e) => setError(e instanceof ApiError ? e.message : "Couldn't load director emails."));
+  const loadEmails = useCallback(async () => {
+    const data = await api.get<DirectorEmails[]>(`/pipeline/${lead.id}/email-candidates`);
+    setEmails(data);
+    setSteps(
+      Object.fromEntries(data.map((d) => [d.director_name, { idx: 0, acceptedIdx: null }])),
+    );
   }, [lead.id]);
+
+  useEffect(() => {
+    loadEmails().catch((e) =>
+      setError(e instanceof ApiError ? e.message : "Couldn't load director emails."),
+    );
+  }, [loadEmails]);
+
+  // Re-run director enrichment (e.g. after a transient CH failure, or a lead that
+  // was enriched empty before CH_API_KEY was set on the server).
+  async function reenrich() {
+    setReenriching(true);
+    setError(null);
+    try {
+      await api.post(`/pipeline/${lead.id}/enrich-directors`);
+      await loadEmails();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Re-fetch failed.");
+    } finally {
+      setReenriching(false);
+    }
+  }
 
   const linkedin = lead.corrected_linkedin_url || lead.linkedin_url;
   const website = lead.corrected_website_url || lead.website_url;
@@ -134,7 +152,12 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
             <Spinner className="h-4 w-4" /> Loading directors…
           </div>
         ) : emails.length === 0 ? (
-          <p className="text-sm text-muted">No directors found.</p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm text-muted">No directors found.</p>
+            <Button variant="outline" onClick={reenrich} disabled={reenriching} className="text-xs">
+              {reenriching ? <Spinner className="h-4 w-4" /> : "Re-fetch"}
+            </Button>
+          </div>
         ) : (
           <div className="space-y-3">
             {emails.map((d) => {

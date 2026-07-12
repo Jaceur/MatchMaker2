@@ -37,6 +37,7 @@ The worker keeps building with Nixpacks + the root `requirements.txt`, untouched
    | `SUPABASE_USER` | `postgres.grkwrvxerhyvusuvprmu` |
    | `SUPABASE_PORT` | `5432` |
    | `SUPABASE_DBNAME` | `postgres` |
+   | `CH_API_KEY` | *(Companies House REST key, from `.streamlit/secrets.toml`)* — needed for director enrichment |
    | `JWT_SECRET` | *(a long random string — `python -c "import secrets;print(secrets.token_urlsafe(32))"`)* |
    | `CORS_ORIGINS` | *(your Vercel URL, e.g. `https://your-app.vercel.app`)* |
 

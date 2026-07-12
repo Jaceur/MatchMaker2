@@ -49,6 +49,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
+                data-nav={item.href}
                 className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition
                   ${active ? "bg-brand/10 text-brand" : "text-muted hover:bg-surface-2 hover:text-foreground"}`}
               >
