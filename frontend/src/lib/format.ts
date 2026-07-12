@@ -49,3 +49,13 @@ export function directorList(v?: string | null): string[] {
   if (!v) return [];
   return v.split(",").map((d) => d.trim()).filter(Boolean);
 }
+
+// "https://www.acme.co.uk/about" -> "acme.co.uk" (for the Business Search).
+export function bareDomain(url?: string | null): string {
+  if (!url) return "";
+  return url
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/^www\./i, "")
+    .replace(/\/.*$/, "");
+}

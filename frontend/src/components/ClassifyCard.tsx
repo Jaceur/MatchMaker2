@@ -3,10 +3,10 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { Lead, DirectorEmails, EmailVerdict } from "@/lib/types";
+import { bareDomain } from "@/lib/format";
 import { Button, Card, Spinner } from "./ui";
 
-// "Won" retired for GDPR → "Existing Account - Already Claimed". Two claimed/
-// unclaimed variants each for accounts and leads.
+// "Won" retired for GDPR → "Existing Account - Already Claimed".
 export const CRM_STATUS_OPTIONS = [
   "Net New",
   "Existing Lead - Unclaimed",
@@ -16,11 +16,38 @@ export const CRM_STATUS_OPTIONS = [
   "Disqualified",
 ];
 
-// One approved lead awaiting a CRM status: confirm director-email guesses, pick a
-// status, save. Mirrors ae_dashboard._classify_card.
+const salesNavSearch = (name: string) =>
+  `https://www.linkedin.com/sales/search/company?keywords=${encodeURIComponent(name)}`;
+const businessSearch = (domain: string) =>
+  `https://www.google.com/search?q=${encodeURIComponent(domain)}`;
+const mailmeteor = (email: string) =>
+  `https://mailmeteor.com/email-checker?email=${encodeURIComponent(email)}`;
+
+// One accepted/rejected step position per director.
+interface Step {
+  idx: number;
+  acceptedIdx: number | null;
+}
+
+function SearchLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm font-medium transition hover:border-brand hover:text-brand"
+    >
+      {children}
+    </a>
+  );
+}
+
+// One approved lead awaiting a CRM status: vet a best-guess director email
+// one-at-a-time (verify via Mailmeteor, then ✓ accept or ✗ next), pick a status,
+// save. Mirrors ae_dashboard._classify_card, streamlined.
 export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void }) {
   const [emails, setEmails] = useState<DirectorEmails[] | null>(null);
-  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [steps, setSteps] = useState<Record<string, Step>>({});
   const [crm, setCrm] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,15 +55,21 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
   useEffect(() => {
     api
       .get<DirectorEmails[]>(`/pipeline/${lead.id}/email-candidates`)
-      .then(setEmails)
+      .then((data) => {
+        setEmails(data);
+        setSteps(
+          Object.fromEntries(data.map((d) => [d.director_name, { idx: 0, acceptedIdx: null }])),
+        );
+      })
       .catch((e) => setError(e instanceof ApiError ? e.message : "Couldn't load director emails."));
   }, [lead.id]);
 
-  const website = lead.corrected_website_url || lead.website_url;
   const linkedin = lead.corrected_linkedin_url || lead.linkedin_url;
+  const website = lead.corrected_website_url || lead.website_url;
+  const domain = bareDomain(website);
 
-  function toggle(key: string) {
-    setSelected((s) => ({ ...s, [key]: !s[key] }));
+  function setStep(director: string, patch: Partial<Step>) {
+    setSteps((s) => ({ ...s, [director]: { ...s[director], ...patch } }));
   }
 
   async function save() {
@@ -47,17 +80,17 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
     setSaving(true);
     setError(null);
     const verdicts: EmailVerdict[] = [];
-    (emails || []).forEach((d) =>
-      d.candidates.forEach((c) => {
-        const key = `${d.director_name}|${c.pattern}`;
+    (emails || []).forEach((d) => {
+      const acceptedIdx = steps[d.director_name]?.acceptedIdx ?? null;
+      d.candidates.forEach((c, i) => {
         verdicts.push({
           director_name: d.director_name,
           pattern: c.pattern,
           email: c.email,
-          selected: !!selected[key],
+          selected: acceptedIdx === i,
         });
-      }),
-    );
+      });
+    });
     try {
       await api.post(`/pipeline/${lead.id}/classify`, { crm_status: crm, email_verdicts: verdicts });
       onDone();
@@ -79,21 +112,17 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
         )}
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-3 text-sm">
-        {website && (
-          <a href={website} target="_blank" rel="noreferrer" className="text-brand underline">
-            🌐 Website
-          </a>
-        )}
+      {/* Research shortcuts */}
+      <div className="mt-3 flex flex-wrap gap-2">
         {linkedin && (
-          <a href={linkedin} target="_blank" rel="noreferrer" className="text-brand underline">
-            💼 LinkedIn
-          </a>
+          <SearchLink href={salesNavSearch(lead.company_name)}>💼 LinkedIn Search</SearchLink>
         )}
-        {!website && !linkedin && <span className="text-muted">No links found</span>}
+        {domain && <SearchLink href={businessSearch(domain)}>🔎 Business Search</SearchLink>}
+        {!linkedin && !domain && <span className="text-sm text-muted">No LinkedIn or website</span>}
       </div>
 
-      <div className="mt-3">
+      {/* Director emails — one suggestion at a time, most popular first */}
+      <div className="mt-4">
         {emails === null ? (
           <div className="flex items-center gap-2 text-sm text-muted">
             <Spinner className="h-4 w-4" /> Loading directors…
@@ -102,37 +131,82 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
           <p className="text-sm text-muted">No directors found.</p>
         ) : (
           <div className="space-y-3">
-            <p className="text-xs text-muted">
-              Tick each email that looks right (used for outreach).
-            </p>
-            {emails.map((d) => (
-              <div key={d.director_name}>
-                <p className="text-sm font-medium">👤 {d.director_name}</p>
-                {d.candidates.length === 0 ? (
-                  <p className="text-xs text-muted">No website domain — can&apos;t suggest emails.</p>
-                ) : (
-                  <div className="mt-1 flex flex-wrap gap-1.5">
-                    {d.candidates.map((c) => {
-                      const key = `${d.director_name}|${c.pattern}`;
-                      const on = !!selected[key];
-                      return (
-                        <button
-                          key={key}
-                          type="button"
-                          onClick={() => toggle(key)}
-                          className={`rounded-md px-2 py-1 text-xs font-medium transition ${
-                            on ? "bg-success text-white" : "bg-surface-2 text-muted hover:text-foreground"
-                          }`}
+            {emails.map((d) => {
+              const step = steps[d.director_name] || { idx: 0, acceptedIdx: null };
+              return (
+                <div key={d.director_name} className="rounded-lg bg-surface-2 p-3">
+                  <p className="text-sm font-medium">👤 {d.director_name}</p>
+
+                  {d.candidates.length === 0 ? (
+                    <p className="mt-1 text-xs text-muted">No website domain — can&apos;t suggest emails.</p>
+                  ) : step.acceptedIdx !== null ? (
+                    <div className="mt-1.5 flex items-center justify-between gap-2">
+                      <a
+                        href={mailmeteor(d.candidates[step.acceptedIdx].email)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="truncate text-sm font-medium text-success underline"
+                      >
+                        ✓ {d.candidates[step.acceptedIdx].email}
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => setStep(d.director_name, { acceptedIdx: null })}
+                        className="shrink-0 text-xs text-muted hover:text-foreground"
+                      >
+                        change
+                      </button>
+                    </div>
+                  ) : step.idx < d.candidates.length ? (
+                    <div className="mt-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <a
+                          href={mailmeteor(d.candidates[step.idx].email)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="truncate text-sm text-brand underline"
+                          title="Verify on Mailmeteor"
                         >
-                          {on ? "✓ " : ""}
-                          {c.email}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            ))}
+                          {d.candidates[step.idx].email}
+                        </a>
+                        <div className="flex shrink-0 gap-1.5">
+                          <button
+                            type="button"
+                            aria-label="Reject, show next"
+                            onClick={() => setStep(d.director_name, { idx: step.idx + 1 })}
+                            className="rounded-md bg-surface px-2.5 py-1 text-sm font-medium text-danger hover:bg-danger hover:text-white"
+                          >
+                            ✗
+                          </button>
+                          <button
+                            type="button"
+                            aria-label="Accept this email"
+                            onClick={() => setStep(d.director_name, { acceptedIdx: step.idx })}
+                            className="rounded-md bg-surface px-2.5 py-1 text-sm font-medium text-success hover:bg-success hover:text-white"
+                          >
+                            ✓
+                          </button>
+                        </div>
+                      </div>
+                      <p className="mt-1 text-[11px] text-muted">
+                        Guess {step.idx + 1} of {d.candidates.length} · tap the email to verify
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="mt-1.5 flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted">No email accepted.</span>
+                      <button
+                        type="button"
+                        onClick={() => setStep(d.director_name, { idx: 0 })}
+                        className="text-xs text-brand hover:underline"
+                      >
+                        start over
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
