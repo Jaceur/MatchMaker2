@@ -57,6 +57,8 @@ export interface ClassifiedLead {
 
 export interface DirectorEmails {
   director_name: string;
+  appointments?: number | null; // total companies this officer is on
+  officer_url?: string | null; // Companies House officer page
   candidates: { pattern: string; email: string }[];
 }
 

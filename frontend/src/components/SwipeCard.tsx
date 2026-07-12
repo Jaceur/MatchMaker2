@@ -10,7 +10,7 @@ import {
 } from "motion/react";
 import type { Lead } from "@/lib/types";
 import { LeadProfile } from "./LeadProfile";
-import { Button, Card, CopyButton, Spinner } from "./ui";
+import { Button, Card } from "./ui";
 
 const PASS_REASONS = [
   "Bad Industry",
@@ -34,64 +34,39 @@ export interface ApprovePayload {
   corrected_linkedin_url: string | null;
 }
 
-type Mode = "idle" | "passing" | "approving";
+type Mode = "idle" | "passing";
 
-/** One source shown on the face of the card: a clickable link, or "not found". */
-function SourceLine({ icon, label, url }: { icon: string; label: string; url: string | null }) {
-  return (
-    <div className="flex items-center justify-between gap-2 rounded-lg bg-surface-2 px-3 py-2 text-sm">
-      <span className="font-medium">
-        {icon} {label}
-      </span>
-      {url ? (
-        <a
-          href={url}
-          target="_blank"
-          rel="noreferrer"
-          className="max-w-[60%] truncate text-brand underline"
-        >
-          {url.replace(/^https?:\/\//, "")}
-        </a>
-      ) : (
-        <span className="text-muted">not found</span>
-      )}
-    </div>
-  );
-}
-
-/** A website/LinkedIn field in the approve overlay, with a "none found" toggle. */
-function SourceInput({
+// An editable source on the card face: correct/add the URL before approving.
+function SourceField({
+  icon,
   label,
   value,
   onChange,
-  none,
-  onToggleNone,
 }: {
+  icon: string;
   label: string;
   value: string;
   onChange: (v: string) => void;
-  none: boolean;
-  onToggleNone: () => void;
 }) {
+  const v = value.trim();
+  const href = v ? (/^https?:\/\//i.test(v) ? v : `https://${v}`) : null;
   return (
     <div>
       <div className="mb-1 flex items-center justify-between">
-        <label className="text-sm font-medium">{label}</label>
-        <button
-          type="button"
-          onClick={onToggleNone}
-          className={`rounded-md px-2 py-1 text-xs font-medium transition ${
-            none ? "bg-danger text-white" : "bg-surface-2 text-muted hover:text-foreground"
-          }`}
-        >
-          {none ? "✓ none found" : "none found"}
-        </button>
+        <label className="text-xs font-medium text-muted">
+          {icon} {label}
+        </label>
+        {href && (
+          <a href={href} target="_blank" rel="noreferrer" className="text-xs text-brand">
+            open ↗
+          </a>
+        )}
       </div>
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="https://…"
-        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
+        placeholder="none — add a URL"
+        className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
       />
     </div>
   );
@@ -112,30 +87,14 @@ export function SwipeCard({
   const scrapedLi = lead.corrected_linkedin_url || lead.linkedin_url || null;
 
   const [mode, setMode] = useState<Mode>("idle");
-  const startedAt = useRef(Date.now());
-
-  // Approve-overlay source inputs (prefilled with whatever we scraped).
   const [webUrl, setWebUrl] = useState(scrapedWeb ?? "");
   const [liUrl, setLiUrl] = useState(scrapedLi ?? "");
-  const [webNone, setWebNone] = useState(!scrapedWeb);
-  const [liNone, setLiNone] = useState(!scrapedLi);
+  const startedAt = useRef(Date.now());
 
   const x = useMotionValue(0);
   const rotate = useTransform(x, [-300, 300], [-10, 10]);
-  const approveHint = useTransform(x, [30, 140], [0, 1]);
-  const passHint = useTransform(x, [-140, -30], [1, 0]);
-
-  function openMode(m: Mode) {
-    animate(x, 0, { type: "spring", stiffness: 300, damping: 30 });
-    setMode(m);
-  }
-
-  function onDragEnd(_: unknown, info: { offset: { x: number } }) {
-    if (busy) return;
-    if (info.offset.x > SWIPE_THRESHOLD) openMode("approving");
-    else if (info.offset.x < -SWIPE_THRESHOLD) openMode("passing");
-    else animate(x, 0, { type: "spring", stiffness: 300, damping: 30 });
-  }
+  const approveHint = useTransform(x, [40, 160], [0, 1]);
+  const passHint = useTransform(x, [-160, -40], [1, 0]);
 
   function doPass(reason: string) {
     onPass({
@@ -144,30 +103,22 @@ export function SwipeCard({
     });
   }
 
-  function changeUrl(setUrl: (v: string) => void, setNone: (v: boolean) => void) {
-    return (v: string) => {
-      setUrl(v);
-      if (v.trim()) setNone(false); // typing a URL means it's not "none found"
-    };
-  }
-
-  function toggleNone(none: boolean, setNone: (v: boolean) => void, setUrl: (v: string) => void) {
-    return () => {
-      const next = !none;
-      setNone(next);
-      if (next) setUrl(""); // marking "none found" clears whatever was there
-    };
-  }
-
   function doApprove() {
-    const finalWeb = webNone ? null : webUrl.trim() || null;
-    const finalLi = liNone ? null : liUrl.trim() || null;
+    const finalWeb = webUrl.trim() || null;
+    const finalLi = liUrl.trim() || null;
     onApprove({
-      website_valid: !webNone && finalWeb === scrapedWeb,
-      linkedin_valid: !liNone && finalLi === scrapedLi,
-      corrected_website_url: !webNone && finalWeb && finalWeb !== scrapedWeb ? finalWeb : null,
-      corrected_linkedin_url: !liNone && finalLi && finalLi !== scrapedLi ? finalLi : null,
+      website_valid: finalWeb === scrapedWeb,
+      linkedin_valid: finalLi === scrapedLi,
+      corrected_website_url: finalWeb && finalWeb !== scrapedWeb ? finalWeb : null,
+      corrected_linkedin_url: finalLi && finalLi !== scrapedLi ? finalLi : null,
     });
+  }
+
+  function onDragEnd(_: unknown, info: { offset: { x: number } }) {
+    if (busy) return;
+    if (info.offset.x > SWIPE_THRESHOLD) doApprove();
+    else if (info.offset.x < -SWIPE_THRESHOLD) setMode("passing");
+    else animate(x, 0, { type: "spring", stiffness: 300, damping: 30 });
   }
 
   return (
@@ -181,7 +132,6 @@ export function SwipeCard({
       whileTap={mode === "idle" ? { cursor: "grabbing" } : undefined}
     >
       <Card className="relative overflow-hidden">
-        {/* Drag hints */}
         <motion.div
           style={{ opacity: approveHint }}
           className="pointer-events-none absolute right-4 top-4 z-10 rotate-12 rounded-lg border-2 border-success px-3 py-1 text-lg font-black text-success"
@@ -195,33 +145,26 @@ export function SwipeCard({
           PASS
         </motion.div>
 
-        {/* Card face: full-bleed hero + gridded body */}
+        {/* Card face: hero + gridded body */}
         <LeadProfile lead={lead} />
 
-        {/* Sources + decision */}
+        {/* Editable sources + decision */}
         <div className="space-y-3 px-5 pb-5 pt-3">
-          <CopyButton
-            text={lead.company_name}
-            copiedLabel="✓ Copied name"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs font-medium text-muted transition hover:border-brand hover:text-brand"
-          >
-            📋 Copy company name
-          </CopyButton>
-          <div className="space-y-2">
-            <SourceLine icon="🌐" label="Website" url={scrapedWeb} />
-            <SourceLine icon="💼" label="LinkedIn" url={scrapedLi} />
+          <div className="space-y-2.5">
+            <SourceField icon="🌐" label="Website" value={webUrl} onChange={setWebUrl} />
+            <SourceField icon="💼" label="LinkedIn" value={liUrl} onChange={setLiUrl} />
           </div>
           <div className="flex gap-3">
             <Button variant="danger" className="flex-1" disabled={busy} onClick={() => setMode("passing")}>
               ✗ Pass
             </Button>
-            <Button variant="success" className="flex-1" disabled={busy} onClick={() => setMode("approving")}>
+            <Button variant="success" className="flex-1" disabled={busy} onClick={doApprove}>
               ✓ Approve
             </Button>
           </div>
         </div>
 
-        {/* Overlays */}
+        {/* Pass overlay (approve has no overlay — it commits inline) */}
         <AnimatePresence>
           {mode === "passing" && (
             <motion.div
@@ -257,54 +200,6 @@ export function SwipeCard({
                 >
                   ← Back
                 </button>
-              </div>
-            </motion.div>
-          )}
-
-          {mode === "approving" && (
-            <motion.div
-              key="approving"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.15 }}
-              className="absolute inset-0 z-20 overflow-y-auto bg-brand/10 backdrop-blur-sm"
-            >
-              <div className="flex min-h-full flex-col bg-surface/80 p-5">
-                <div className="m-auto w-full space-y-4">
-                  <div>
-                    <h3 className="text-lg font-bold text-brand">Confirm the sources</h3>
-                    <p className="text-sm text-muted">
-                      Add the correct links — we use them to find director emails.
-                    </p>
-                  </div>
-                  <SourceInput
-                    label="🌐 Website"
-                    value={webUrl}
-                    onChange={changeUrl(setWebUrl, setWebNone)}
-                    none={webNone}
-                    onToggleNone={toggleNone(webNone, setWebNone, setWebUrl)}
-                  />
-                  <SourceInput
-                    label="💼 LinkedIn"
-                    value={liUrl}
-                    onChange={changeUrl(setLiUrl, setLiNone)}
-                    none={liNone}
-                    onToggleNone={toggleNone(liNone, setLiNone, setLiUrl)}
-                  />
-                  <div className="flex gap-3 pt-1">
-                    <Button variant="outline" className="flex-1" onClick={() => setMode("idle")}>
-                      ← Back
-                    </Button>
-                    <Button variant="success" className="flex-1" disabled={busy} onClick={doApprove}>
-                      {busy ? (
-                        <Spinner className="h-4 w-4 border-white/40 border-t-white" />
-                      ) : (
-                        "✓ Approve"
-                      )}
-                    </Button>
-                  </div>
-                </div>
               </div>
             </motion.div>
           )}

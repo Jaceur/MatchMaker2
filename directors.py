@@ -23,6 +23,10 @@ EMAIL_PATTERNS = [
 ]
 
 CH_OFFICERS_URL = "https://api.company-information.service.gov.uk/company/{crn}/officers"
+# One officer's appointments (used only for the total_results count).
+CH_APPOINTMENTS_URL = "https://api.company-information.service.gov.uk/officers/{officer_id}/appointments"
+# The public "officer appointments" page an AE can open to see the person.
+OFFICER_PUBLIC_URL = "https://find-and-update.company-information.service.gov.uk/officers/{officer_id}/appointments"
 MAX_DIRECTORS = 3
 # Leadership roles we treat as "directors". LLPs (also sourced) use llp-member
 # instead of director, so include both; corporate variants have no DOB and are
@@ -107,19 +111,61 @@ def fetch_top_directors(crn, limit=MAX_DIRECTORS):
         key=lambda o: (o["date_of_birth"].get("year", 0), o["date_of_birth"].get("month", 0)),
         reverse=True,
     )
-    return [_format_name(o.get("name", "")) for o in directors[:limit] if o.get("name")]
+    out = []
+    for o in directors[:limit]:
+        name = _format_name(o.get("name", ""))
+        if not name:
+            continue
+        # links.officer.appointments = "/officers/{officer_id}/appointments"
+        appt_path = (((o.get("links") or {}).get("officer") or {}).get("appointments")) or ""
+        officer_id = appt_path.split("/officers/", 1)[1].split("/", 1)[0] if "/officers/" in appt_path else ""
+        out.append({"name": name, "officer_id": officer_id})
+    return out
+
+
+def fetch_appointment_count(officer_id):
+    """Total company appointments this officer holds (Companies House
+    total_results). None on any failure — never blocks enrichment."""
+    if not officer_id:
+        return None
+    try:
+        from ch_client import get_secret
+        resp = requests.get(
+            CH_APPOINTMENTS_URL.format(officer_id=officer_id),
+            auth=(get_secret("CH_API_KEY"), ""),
+            params={"items_per_page": 1},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("total_results")
+    except Exception as e:
+        print(f"CH appointments request failed for {officer_id}: {e}")
+    return None
 
 
 def enrich_lead_directors(lead_id, crn):
-    """Fetch the lead's directors and persist them on sales_leads. Marks the lead
-    enriched even if none were found, so the pipeline gate doesn't get stuck on a
-    quiet company or a transient API hiccup. Returns the list of names."""
-    names = fetch_top_directors(crn)
+    """Post-approval enrichment: fetch the lead's directors and, for each, their
+    total company appointments + a link to their CH officer page. Persists both a
+    names string (active_directors) and the richer directors_info list. Marks the
+    lead enriched even if none were found, so the pipeline gate doesn't get stuck
+    on a quiet company or a transient API hiccup. Returns directors_info."""
+    directors = fetch_top_directors(crn)
+    info = [
+        {
+            "name": d["name"],
+            "officer_id": d["officer_id"],
+            "appointments": fetch_appointment_count(d["officer_id"]),
+            "url": OFFICER_PUBLIC_URL.format(officer_id=d["officer_id"]) if d["officer_id"] else None,
+        }
+        for d in directors
+    ]
+    names = [d["name"] for d in directors]
     with engine.begin() as conn:
         conn.execute(
             update(sales_leads).where(sales_leads.c.id == lead_id)
             .values(
                 active_directors=", ".join(names),
+                directors_info=info,
                 directors_enriched=True,
                 # Keep updated_at unchanged: enriching directors shouldn't bump the
                 # lead to the top of the My-Pipeline list (which orders by
@@ -128,4 +174,4 @@ def enrich_lead_directors(lead_id, crn):
                 updated_at=sales_leads.c.updated_at,
             )
         )
-    return names
+    return info

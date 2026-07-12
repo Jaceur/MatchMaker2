@@ -37,6 +37,9 @@ sales_leads = Table(
     Column('is_nabd', Boolean, default=False),
     Column('active_directors', String(255)),
     Column('directors_enriched', Boolean, default=False),
+    # Per-director detail captured at post-approval enrichment: a list of
+    # {name, officer_id, appointments (total companies), url (CH officer page)}.
+    Column('directors_info', JSONB),
     # Companies House extras pulled during enrichment.
     Column('account_type', String(50)),               # micro-entity / small / medium / full…
     Column('last_director_change', Date),             # most recent AP01/TM01 filing date
@@ -476,6 +479,7 @@ _ADDED_COLUMNS = {
     "second_enriched": "BOOLEAN",
     "screen_reason": "VARCHAR(255)",
     "is_holdout": "BOOLEAN",
+    "directors_info": "JSONB",
 }
 try:
     with engine.begin() as _conn:

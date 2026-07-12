@@ -73,9 +73,10 @@ def pass_lead(lead_id: int, username: str, req) -> None:
         award_activity(conn, username, urls_added=len(corrected), leads_swiped=1)
 
 
-def approve_lead(lead_id: int, username: str, req) -> None:
+def approve_lead(lead_id: int, username: str, req) -> str:
     """Mark a lead approved and stash the AE's source-validation verdicts. Mirrors
-    swipe_page's Approve button."""
+    swipe_page's Approve button. Returns the lead's crn so the caller can kick off
+    post-approval director enrichment."""
     lead = get_lead_for_ae(lead_id, username)
     corrected = _corrected_columns(req.corrected_website_url, req.corrected_linkedin_url)
     with engine.begin() as conn:
@@ -88,6 +89,7 @@ def approve_lead(lead_id: int, username: str, req) -> None:
             )
         )
         award_activity(conn, username, urls_added=len(corrected), leads_swiped=1)
+    return lead["crn"]
 
 
 def classify_lead(lead_id: int, username: str, crm_status: str, email_verdicts) -> None:

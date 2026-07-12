@@ -70,21 +70,37 @@ def enrich_directors(lead_id: int, user: CurrentUser = Depends(get_current_user)
 
 @router.get("/{lead_id}/email-candidates")
 def email_candidates_for_lead(lead_id: int, user: CurrentUser = Depends(get_current_user)) -> list[dict]:
-    """For each director on the lead, the suggested email-format guesses the AE
-    vets during classify."""
+    """For each director on the lead: their total company appointments, a link to
+    their Companies House officer page, and the email-format guesses to vet."""
     lead = get_lead_for_ae(lead_id, user.username)
     domain = domain_from_url(lead.get("corrected_website_url") or lead.get("website_url"))
-    directors = [d.strip() for d in (lead.get("active_directors") or "").split(",") if d.strip()]
-    out = []
-    for director in directors:
-        out.append({
-            "director_name": director,
+
+    # Prefer the richer directors_info (name + appointments + officer url); fall
+    # back to the plain names string for leads enriched before that existed.
+    info = lead.get("directors_info") or []
+    if info:
+        base = [
+            {"name": d.get("name"), "appointments": d.get("appointments"), "officer_url": d.get("url")}
+            for d in info if d.get("name")
+        ]
+    else:
+        base = [
+            {"name": n.strip(), "appointments": None, "officer_url": None}
+            for n in (lead.get("active_directors") or "").split(",") if n.strip()
+        ]
+
+    return [
+        {
+            "director_name": d["name"],
+            "appointments": d["appointments"],
+            "officer_url": d["officer_url"],
             "candidates": [
                 {"pattern": pattern, "email": email}
-                for pattern, email in email_candidates(director, domain)
+                for pattern, email in email_candidates(d["name"], domain)
             ],
-        })
-    return out
+        }
+        for d in base
+    ]
 
 
 @router.post("/{lead_id}/classify", status_code=204)

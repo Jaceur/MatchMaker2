@@ -141,7 +141,27 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
               const step = steps[d.director_name] || { idx: 0, acceptedIdx: null };
               return (
                 <div key={d.director_name} className="rounded-lg bg-surface-2 p-3">
-                  <p className="text-sm font-medium">👤 {d.director_name}</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-sm font-medium">👤 {d.director_name}</p>
+                    <div className="flex shrink-0 items-center gap-2 text-xs">
+                      {d.appointments != null && (
+                        <span className="text-muted">
+                          {Math.max(0, d.appointments - 1)} other{" "}
+                          {Math.max(0, d.appointments - 1) === 1 ? "company" : "companies"}
+                        </span>
+                      )}
+                      {d.officer_url && (
+                        <a
+                          href={d.officer_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-brand underline"
+                        >
+                          officer ↗
+                        </a>
+                      )}
+                    </div>
+                  </div>
 
                   {d.candidates.length === 0 ? (
                     <p className="mt-1 text-xs text-muted">No website domain — can&apos;t suggest emails.</p>
