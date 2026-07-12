@@ -158,7 +158,7 @@ export function SwipeCard({
 
   return (
     <motion.div
-      className="mx-auto w-full max-w-[380px]"
+      className="w-full"
       style={{ x, rotate }}
       drag={mode === "idle" && !busy ? "x" : false}
       dragConstraints={{ left: 0, right: 0 }}

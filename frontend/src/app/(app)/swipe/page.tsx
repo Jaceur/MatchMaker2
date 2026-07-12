@@ -8,12 +8,12 @@ import {
   type PassPayload,
   type ApprovePayload,
 } from "@/components/SwipeCard";
+import { LeadProfile } from "@/components/LeadProfile";
 import { Button, Card, Spinner } from "@/components/ui";
 
 export default function SwipePage() {
   const [queue, setQueue] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -33,19 +33,21 @@ export default function SwipePage() {
   }, [load]);
 
   const current = queue[0];
+  const peeks = queue.slice(1, 3); // preloaded, rendered behind for a smooth deck
 
-  async function act(path: string, payload: PassPayload | ApprovePayload) {
-    if (!current || busy) return;
-    setBusy(true);
+  // Optimistic advance: drop the card immediately so the next one is instant,
+  // fire the API in the background, and roll the lead back if it fails.
+  function act(lead: Lead, path: "pass" | "approve", payload: PassPayload | ApprovePayload) {
     setError(null);
-    try {
-      await api.post(`/leads/${current.id}/${path}`, payload);
-      setQueue((q) => q.slice(1));
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Action failed.");
-    } finally {
-      setBusy(false);
-    }
+    setQueue((q) => q.filter((l) => l.id !== lead.id));
+    api.post(`/leads/${lead.id}/${path}`, payload).catch((err) => {
+      setError(
+        `Couldn't save that ${path} — the lead is back at the top. ${
+          err instanceof ApiError ? err.message : ""
+        }`,
+      );
+      setQueue((q) => (q.some((l) => l.id === lead.id) ? q : [lead, ...q]));
+    });
   }
 
   return (
@@ -53,7 +55,7 @@ export default function SwipePage() {
       <header className="mb-6">
         <h1 className="text-2xl font-bold">🔥 Triage</h1>
         <p className="mt-1 text-sm text-muted">
-          Review each lead, validate the sources, then Pass or Approve.
+          Review each lead, then Pass or Approve.
         </p>
       </header>
 
@@ -68,25 +70,54 @@ export default function SwipePage() {
           <Spinner className="h-8 w-8" />
         </div>
       ) : !current ? (
-        <Card className="p-10 text-center">
+        <Card className="mx-auto max-w-[420px] p-10 text-center">
           <div className="text-4xl">🎉</div>
           <h2 className="mt-3 text-lg font-semibold">Inbox zero</h2>
-          <p className="mt-1 text-sm text-muted">
-            You&apos;ve triaged all your assigned leads.
-          </p>
+          <p className="mt-1 text-sm text-muted">You&apos;ve triaged all your assigned leads.</p>
           <Button variant="outline" onClick={load} className="mt-5">
             Check for new leads
           </Button>
         </Card>
       ) : (
         <>
-          <SwipeCard
-            key={current.id}
-            lead={current}
-            busy={busy}
-            onPass={(p) => act("pass", p)}
-            onApprove={(p) => act("approve", p)}
-          />
+          <div className="relative mx-auto w-full max-w-[420px]">
+            {/* Preloaded next cards, stacked behind (deepest first) */}
+            {peeks
+              .slice()
+              .reverse()
+              .map((lead, idx) => {
+                const depth = peeks.length - idx; // 2 for the furthest, 1 for the nearest
+                return (
+                  <div
+                    key={lead.id}
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-0 top-0"
+                    style={{
+                      transformOrigin: "top center",
+                      transform: `scale(${1 - depth * 0.04}) translateY(${depth * 10}px)`,
+                      zIndex: 10 - depth,
+                      opacity: 0.6,
+                    }}
+                  >
+                    <Card className="overflow-hidden">
+                      <LeadProfile lead={lead} />
+                    </Card>
+                  </div>
+                );
+              })}
+
+            {/* Top interactive card */}
+            <div className="relative z-20">
+              <SwipeCard
+                key={current.id}
+                lead={current}
+                busy={false}
+                onPass={(p) => act(current, "pass", p)}
+                onApprove={(p) => act(current, "approve", p)}
+              />
+            </div>
+          </div>
+
           <p className="mt-4 text-center text-sm text-muted">
             {queue.length} lead{queue.length === 1 ? "" : "s"} left to review
           </p>

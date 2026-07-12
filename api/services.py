@@ -118,10 +118,8 @@ def classify_lead(lead_id: int, username: str, crm_status: str, email_verdicts) 
                 dwell_time_seconds=None,
             ))
         )
-        conn.execute(
-            update(sales_leads).where(sales_leads.c.id == lead_id)
-            .values(is_nabd=(crm_status == "Won"))
-        )
+        # "Won" was retired (GDPR): it's now "Existing Account - Already Claimed",
+        # so classify no longer flags is_nabd. The column stays for old rows.
         if email_rows:
             conn.execute(insert(director_emails_table), email_rows)
         award_activity(conn, username, leads_saved=1)
