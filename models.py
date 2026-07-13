@@ -25,7 +25,6 @@ sales_leads = Table(
     Column('sic_codes', String(255)),
     Column('website_url', String(500)),
     Column('linkedin_url', String(500)),
-    Column('contact_email', String(255)),
     Column('website_accurate', Boolean, default=None),
     Column('linkedin_accurate', Boolean, default=None),
     Column('contact_accurate', Boolean, default=None),
@@ -34,7 +33,6 @@ sales_leads = Table(
     Column('corrected_website_url', String(500)),
     Column('corrected_linkedin_url', String(500)),
     Column('rejection_reason', String(255)),
-    Column('is_nabd', Boolean, default=False),
     Column('active_directors', String(255)),
     Column('directors_enriched', Boolean, default=False),
     # Per-director detail captured at post-approval enrichment: a list of
@@ -102,6 +100,13 @@ ml_pipeline_analytics = Table(
     Column('linkedin_valid', Boolean),
     Column('corrected_website_url', String),
     Column('corrected_linkedin_url', String),
+    # Learning-to-rank: the candidate set the AE chose from, plus the URL they
+    # actually picked. Durable here (survives a Clear Pipeline) even though the
+    # sales_leads copy gets wiped.
+    Column('website_candidates', JSONB),
+    Column('linkedin_candidates', JSONB),
+    Column('website_chosen', String),
+    Column('linkedin_chosen', String),
 
     # The Swipe
     Column('is_worth_it', Boolean),
@@ -144,16 +149,15 @@ pipeline_archive = Table(
     Column('sic_codes', String(255)),
     Column('website_url', String(500)),
     Column('linkedin_url', String(500)),
-    Column('contact_email', String(255)),
     Column('website_accurate', Boolean),
     Column('linkedin_accurate', Boolean),
     Column('contact_accurate', Boolean),
     Column('corrected_website_url', String(500)),
     Column('corrected_linkedin_url', String(500)),
     Column('rejection_reason', String(255)),
-    Column('is_nabd', Boolean),
     Column('active_directors', String(255)),
     Column('directors_enriched', Boolean),
+    Column('directors_info', JSONB),
     Column('account_type', String(50)),
     Column('last_director_change', Date),
     Column('director_change_recent', Boolean),
@@ -178,6 +182,8 @@ pipeline_archive = Table(
     Column('assigned_date', DateTime),
     Column('website_score', Integer),
     Column('linkedin_score', Integer),
+    Column('website_candidates', JSONB),
+    Column('linkedin_candidates', JSONB),
     Column('confidence_score', Integer),
     Column('created_at', DateTime),
     Column('updated_at', DateTime),
@@ -254,6 +260,8 @@ screening_log = Table(
     Column('crn', String(20)),
     Column('company_name', String(255)),
     # the features (the future model's inputs):
+    Column('sic_codes', String(255)),
+    Column('incorporation_date', Date),
     Column('account_type', String(50)),
     Column('employee_count', Integer),
     Column('turnover', BigInteger),
@@ -264,6 +272,10 @@ screening_log = Table(
     Column('import_activity', Boolean),
     Column('export_activity', Boolean),
     Column('director_change_recent', Boolean),
+    # web-presence signals (only set for leads that reach Stage C):
+    Column('confidence_score', Integer),
+    Column('website_score', Integer),
+    Column('linkedin_score', Integer),
     # the decision:
     Column('lead_score', Integer),
     Column('qualify_bar', Integer),
@@ -508,8 +520,33 @@ try:
             _conn.execute(text(
                 f"ALTER TABLE screening_log ADD COLUMN IF NOT EXISTS {_col} BIGINT"
             ))
+        # Completed feature set: SIC, incorporation date, and the web-presence
+        # scores, so the durable training log doesn't depend on the wiped
+        # sales_leads copy.
+        for _col, _type in (
+            ("sic_codes", "VARCHAR(255)"), ("incorporation_date", "DATE"),
+            ("confidence_score", "INTEGER"), ("website_score", "INTEGER"),
+            ("linkedin_score", "INTEGER"),
+        ):
+            _conn.execute(text(
+                f"ALTER TABLE screening_log ADD COLUMN IF NOT EXISTS {_col} {_type}"
+            ))
 except Exception as _e:
     print(f"screening_log migration skipped: {_e}")
+
+# ml_pipeline_analytics gained the learning-to-rank columns (candidate sets + the
+# chosen URL) after the table was already live — add them idempotently.
+try:
+    with engine.begin() as _conn:
+        for _col, _type in (
+            ("website_candidates", "JSONB"), ("linkedin_candidates", "JSONB"),
+            ("website_chosen", "VARCHAR"), ("linkedin_chosen", "VARCHAR"),
+        ):
+            _conn.execute(text(
+                f"ALTER TABLE ml_pipeline_analytics ADD COLUMN IF NOT EXISTS {_col} {_type}"
+            ))
+except Exception as _e:
+    print(f"ml_pipeline_analytics migration skipped: {_e}")
 
 # Indexes for the columns the latency-sensitive queries filter and sort by: the
 # swipe queue (get_pending_leads) and lead allocation (top_up_allocation) both

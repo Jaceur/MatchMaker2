@@ -42,7 +42,6 @@ def classified(user: CurrentUser = Depends(get_current_user)) -> list[dict]:
             COALESCE(sl.corrected_linkedin_url, sl.linkedin_url) AS linkedin_url,
             m.crm_status,
             sl.active_directors,
-            sl.is_nabd,
             DATE(sl.updated_at) AS date_approved
         FROM sales_leads sl
         JOIN ml_pipeline_analytics m ON m.lead_id = sl.id

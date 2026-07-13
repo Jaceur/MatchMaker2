@@ -38,7 +38,6 @@ export interface Lead {
   import_activity?: boolean | null;
   export_activity?: boolean | null;
   director_change_recent?: boolean | null;
-  is_nabd?: boolean | null;
   website_candidates?: SourceCandidate[] | null;
   linkedin_candidates?: SourceCandidate[] | null;
   // catch-all for the remaining columns
@@ -59,7 +58,6 @@ export interface ClassifiedLead {
   linkedin_url: string | null;
   crm_status: string | null;
   active_directors: string | null;
-  is_nabd: boolean | null;
   date_approved: string | null;
 }
 

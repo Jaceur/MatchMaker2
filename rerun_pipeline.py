@@ -1,7 +1,7 @@
-"""Re-run the staged pipeline over every NON-SWIPED lead — screened-out, awaiting
-allocation, and still pending for AE swipes — so each is re-enriched and re-scored
-from scratch with the CURRENT scoring. Leads already swiped on (approved /
-archived) and their data are left completely untouched.
+"""Re-run the staged pipeline over the still-in-play leads only — those
+'ready_for_swipe' (awaiting allocation, or assigned but not yet swiped) — so each
+is re-enriched and re-scored from scratch with the CURRENT scoring. Screened-out
+leads and already-swiped leads (approved / archived) are left completely untouched.
 
     python rerun_pipeline.py
 
@@ -23,8 +23,11 @@ from database import engine
 from models import sales_leads
 from pipeline import run_pipeline  # noqa: E402  (after logging setup)
 
-# Leads to send back through the pipeline (everything not yet swiped on).
-RESET_STATUSES = ('screened_out', 'ready_for_swipe')
+# Leads to send back through the pipeline: only the still-in-play ones —
+# 'ready_for_swipe' (awaiting allocation OR assigned but not yet swiped). We
+# deliberately DON'T re-run 'screened_out' leads (they were binned and don't
+# need re-enriching) or swiped leads ('approved' / 'archived', left untouched).
+RESET_STATUSES = ('ready_for_swipe',)
 
 
 def _progress(done, total, name):
@@ -47,9 +50,9 @@ def main():
 
     total = to_reset + already_sourced
     print(f"Re-running the pipeline on {total} leads:")
-    print(f"  - {to_reset} screened-out / awaiting / pending  (reset to 'sourced')")
+    print(f"  - {to_reset} ready-to-swipe (awaiting / assigned, not swiped)  (reset to 'sourced')")
     print(f"  - {already_sourced} already sourced")
-    print("  Swiped leads (approved / archived) are left untouched.\n")
+    print("  Screened-out and swiped (approved / archived) leads are left untouched.\n")
     if total == 0:
         print("Nothing to do.")
         return

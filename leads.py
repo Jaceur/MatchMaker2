@@ -51,9 +51,16 @@ def build_ml_row(lead, swiped_by, **overrides):
         "website_score": lead.get("website_score") or 0,
         "linkedin_score": lead.get("linkedin_score") or 0,
         "overall_score": lead.get("confidence_score") or 0,
+        # Learning-to-rank: snapshot the candidate sets the AE chose from.
+        "website_candidates": lead.get("website_candidates"),
+        "linkedin_candidates": lead.get("linkedin_candidates"),
         "swiped_by": swiped_by,
     }
     row.update(overrides)
+    # The chosen URL = the AE's correction if any, else the scraped default. Read
+    # after overrides so a swipe-time correction wins.
+    row["website_chosen"] = row.get("corrected_website_url") or lead.get("website_url")
+    row["linkedin_chosen"] = row.get("corrected_linkedin_url") or lead.get("linkedin_url")
     return row
 
 

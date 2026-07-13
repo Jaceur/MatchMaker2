@@ -52,7 +52,7 @@ UKTRADE_TRADER_URL = "https://api.uktradeinfo.com/Trader"
 # Sites we never want to mistake for a company's own website.
 # Defined once here, instead of being rebuilt for every single lead.
 BLOCKED_DOMAINS = [
-    'linkedin.com', 'companieshouse', 'endole.co.uk', 'facebook.com', 'gov.uk',
+    'linkedin.com', 'companieshouse', 'company-information', 'endole.co.uk', 'facebook.com', 'gov.uk',
     'instagram.com', 'twitter.com', 'yelp.co.uk', 'yell.com', 'companycheck.co.uk',
     'sparklane-group', 'theladders.com', 'bloomberg.com', 'wikipedia.org',
     'crunchbase.com', 'pitchbook.com', 'zoominfo.com', 'dunandbradstreet',
