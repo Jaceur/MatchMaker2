@@ -8,7 +8,8 @@ import {
   useTransform,
   animate,
 } from "motion/react";
-import type { Lead } from "@/lib/types";
+import type { Lead, SourceCandidate } from "@/lib/types";
+import { bareDomain } from "@/lib/format";
 import { LeadProfile } from "./LeadProfile";
 import { Button, Card } from "./ui";
 
@@ -21,6 +22,7 @@ const PASS_REASONS = [
   "Other",
 ];
 const SWIPE_THRESHOLD = 110;
+const LI_PREFIX = "https://www.linkedin.com/company/";
 
 export interface PassPayload {
   rejection_reason: string;
@@ -36,38 +38,106 @@ export interface ApprovePayload {
 
 type Mode = "idle" | "passing";
 
-// An editable source on the card face: correct/add the URL before approving.
-function SourceField({
+const linkedinSlug = (url: string) => url.match(/\/company\/([^/?]+)/)?.[1] ?? url;
+const withScheme = (url: string) => (/^https?:\/\//i.test(url) ? url : `https://${url}`);
+
+// A dropdown of the top-N scored search candidates, so the AE picks the right one
+// (no pasting) — and we learn which they chose. "None" / "Other" fall back to
+// hand entry. For LinkedIn the /company/ prefix is fixed; only the slug is typed.
+function SourcePicker({
   icon,
   label,
-  value,
+  kind,
+  candidates,
+  current,
   onChange,
 }: {
   icon: string;
   label: string;
-  value: string;
-  onChange: (v: string) => void;
+  kind: "website" | "linkedin";
+  candidates?: SourceCandidate[] | null;
+  current: string | null;
+  onChange: (url: string | null) => void;
 }) {
-  const v = value.trim();
-  const href = v ? (/^https?:\/\//i.test(v) ? v : `https://${v}`) : null;
+  const isLi = kind === "linkedin";
+  const display = (url: string) => (isLi ? linkedinSlug(url) : bareDomain(url));
+
+  const cands = (candidates ?? []).filter((c) => c.url);
+  const curLower = current?.toLowerCase();
+  const options = cands.map((c) => c.url);
+  if (current && !options.some((u) => u.toLowerCase() === curLower)) options.unshift(current);
+
+  const defaultMode = current
+    ? options.find((u) => u.toLowerCase() === curLower) ?? current
+    : options[0] ?? "__none__";
+
+  const [mode, setMode] = useState(defaultMode);
+  const [otherText, setOtherText] = useState("");
+
+  function resolve(m: string, txt: string): string | null {
+    if (m === "__none__") return null;
+    if (m === "__other__") {
+      const t = txt.trim();
+      if (!t) return null;
+      return isLi ? LI_PREFIX + t.replace(/^.*\/company\//, "").replace(/\/+$/, "") : withScheme(t);
+    }
+    return m;
+  }
+
+  function change(m: string, txt: string) {
+    setMode(m);
+    setOtherText(txt);
+    onChange(resolve(m, txt));
+  }
+
+  const selectedUrl = mode !== "__none__" && mode !== "__other__" ? mode : null;
+
   return (
     <div>
       <div className="mb-1 flex items-center justify-between">
         <label className="text-xs font-medium text-muted">
           {icon} {label}
         </label>
-        {href && (
-          <a href={href} target="_blank" rel="noreferrer" className="text-xs text-brand">
+        {selectedUrl && (
+          <a href={withScheme(selectedUrl)} target="_blank" rel="noreferrer" className="text-xs text-brand">
             open ↗
           </a>
         )}
       </div>
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="none — add a URL"
+      <select
+        value={mode}
+        onChange={(e) => change(e.target.value, otherText)}
         className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
-      />
+      >
+        {options.map((u) => (
+          <option key={u} value={u}>
+            {display(u)}
+          </option>
+        ))}
+        <option value="__none__">None found</option>
+        <option value="__other__">Other — type it</option>
+      </select>
+      {mode === "__other__" &&
+        (isLi ? (
+          <div className="mt-2 flex items-center rounded-lg border border-border bg-surface-2 text-sm focus-within:ring-2 focus-within:ring-[var(--ring)]">
+            <span className="pl-3 text-muted">/company/</span>
+            <input
+              autoFocus
+              value={otherText}
+              onChange={(e) => change("__other__", e.target.value)}
+              placeholder="company-slug"
+              className="flex-1 bg-transparent px-1 py-2 outline-none"
+            />
+          </div>
+        ) : (
+          <input
+            autoFocus
+            value={otherText}
+            onChange={(e) => change("__other__", e.target.value)}
+            placeholder="https://…"
+            className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
+          />
+        ))}
     </div>
   );
 }
@@ -87,8 +157,8 @@ export function SwipeCard({
   const scrapedLi = lead.corrected_linkedin_url || lead.linkedin_url || null;
 
   const [mode, setMode] = useState<Mode>("idle");
-  const [webUrl, setWebUrl] = useState(scrapedWeb ?? "");
-  const [liUrl, setLiUrl] = useState(scrapedLi ?? "");
+  const [webUrl, setWebUrl] = useState<string | null>(scrapedWeb);
+  const [liUrl, setLiUrl] = useState<string | null>(scrapedLi);
   const startedAt = useRef(Date.now());
 
   const x = useMotionValue(0);
@@ -104,13 +174,11 @@ export function SwipeCard({
   }
 
   function doApprove() {
-    const finalWeb = webUrl.trim() || null;
-    const finalLi = liUrl.trim() || null;
     onApprove({
-      website_valid: finalWeb === scrapedWeb,
-      linkedin_valid: finalLi === scrapedLi,
-      corrected_website_url: finalWeb && finalWeb !== scrapedWeb ? finalWeb : null,
-      corrected_linkedin_url: finalLi && finalLi !== scrapedLi ? finalLi : null,
+      website_valid: webUrl === scrapedWeb,
+      linkedin_valid: liUrl === scrapedLi,
+      corrected_website_url: webUrl && webUrl !== scrapedWeb ? webUrl : null,
+      corrected_linkedin_url: liUrl && liUrl !== scrapedLi ? liUrl : null,
     });
   }
 
@@ -145,14 +213,27 @@ export function SwipeCard({
           PASS
         </motion.div>
 
-        {/* Card face: hero + gridded body */}
         <LeadProfile lead={lead} />
 
-        {/* Editable sources + decision */}
+        {/* Pick the right source from the search candidates, then decide */}
         <div className="space-y-3 px-5 pb-5 pt-3">
           <div className="space-y-2.5">
-            <SourceField icon="🌐" label="Website" value={webUrl} onChange={setWebUrl} />
-            <SourceField icon="💼" label="LinkedIn" value={liUrl} onChange={setLiUrl} />
+            <SourcePicker
+              icon="🌐"
+              label="Website"
+              kind="website"
+              candidates={lead.website_candidates}
+              current={scrapedWeb}
+              onChange={setWebUrl}
+            />
+            <SourcePicker
+              icon="💼"
+              label="LinkedIn"
+              kind="linkedin"
+              candidates={lead.linkedin_candidates}
+              current={scrapedLi}
+              onChange={setLiUrl}
+            />
           </div>
           <div className="flex gap-3">
             <Button variant="danger" className="flex-1" disabled={busy} onClick={() => setMode("passing")}>
@@ -164,7 +245,6 @@ export function SwipeCard({
           </div>
         </div>
 
-        {/* Pass overlay (approve has no overlay — it commits inline) */}
         <AnimatePresence>
           {mode === "passing" && (
             <motion.div

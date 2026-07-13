@@ -69,6 +69,11 @@ sales_leads = Table(
     # confidence_score, so the ML log can use three independent signals.
     Column('website_score', Integer),
     Column('linkedin_score', Integer),
+    # Top-N scored search candidates (list of {url, title, score}) kept so an AE
+    # can pick the right one from a dropdown — and so we log which they chose
+    # (a learning-to-rank signal for the website/LinkedIn matcher).
+    Column('website_candidates', JSONB),
+    Column('linkedin_candidates', JSONB),
     Column('confidence_score', Integer, default=0),
     Column('created_at', DateTime, default=datetime.utcnow),
     Column('updated_at', DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -480,6 +485,8 @@ _ADDED_COLUMNS = {
     "screen_reason": "VARCHAR(255)",
     "is_holdout": "BOOLEAN",
     "directors_info": "JSONB",
+    "website_candidates": "JSONB",
+    "linkedin_candidates": "JSONB",
 }
 try:
     with engine.begin() as _conn:

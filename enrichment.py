@@ -397,23 +397,33 @@ def fetch_web_presence(company_name_clean, company_name_strict):
     best_li_score = 0
     best_li_title = None
     best_li_snippet = None
+    website_candidates = []
+    linkedin_candidates = []
 
     # One search session handles both lookups for this lead.
     try:
         with DDGS() as ddgs:
             # --- Website lookup ---
+            # Keep the top 5 scored candidates (not just the winner) so an AE can
+            # pick the right one from a dropdown and we learn which they chose.
             try:
-                results = _ddg_text(ddgs, f'{company_name_clean} UK official website', max_results=3)
-                best_url = None
+                results = _ddg_text(ddgs, f'{company_name_clean} UK official website', max_results=8)
+                cands = []
+                seen = set()
                 for result in results:
-                    raw_link = result.get('href', '').lower()
-                    if any(blocked in raw_link for blocked in BLOCKED_DOMAINS):
+                    raw_link = (result.get('href') or '').strip()
+                    low = raw_link.lower()
+                    if not raw_link or low in seen or any(b in low for b in BLOCKED_DOMAINS):
                         continue
-                    confidence = score_website_match(raw_link, company_name_clean, company_name_strict)
-                    if confidence > best_score:
-                        best_score, best_url = confidence, raw_link
-                if best_score >= WEBSITE_MIN_SCORE:
-                    found_domain = best_url
+                    seen.add(low)
+                    confidence = score_website_match(low, company_name_clean, company_name_strict)
+                    cands.append({"url": raw_link, "title": result.get('title', ''), "score": confidence})
+                cands.sort(key=lambda c: c["score"], reverse=True)
+                website_candidates = cands[:5]
+                if website_candidates:
+                    best_score = website_candidates[0]["score"]
+                    if best_score >= WEBSITE_MIN_SCORE:
+                        found_domain = website_candidates[0]["url"]
             except Exception as e:
                 print(f"DDG Website Search failed: {e}")
 
@@ -423,20 +433,31 @@ def fetch_web_presence(company_name_clean, company_name_strict):
                 # LinkedIn /company/ pages are sparsely indexed by DDG, so pull a
                 # deeper result set — the scorer still gates quality below.
                 results = _ddg_text(ddgs, strict_query, max_results=8)
-                best_li_url = None
+                cands = []
+                seen = set()
                 for result in results:
                     raw_link = result.get('href', '')
                     title = result.get('title', '')
                     snippet = result.get('body', '')
                     if "/company/" in raw_link and "/jobs/" not in raw_link:
+                        clean_url = raw_link.split('?')[0]
+                        if clean_url in seen:
+                            continue
+                        seen.add(clean_url)
                         confidence = score_linkedin_match(raw_link, title, snippet, company_name_clean)
-                        if confidence > best_li_score:
-                            best_li_score = confidence
-                            best_li_url = raw_link.split('?')[0]
-                            best_li_title = title
-                            best_li_snippet = snippet
-                if best_li_score >= 40:
-                    found_linkedin = best_li_url
+                        cands.append({"url": clean_url, "title": title, "snippet": snippet, "score": confidence})
+                cands.sort(key=lambda c: c["score"], reverse=True)
+                if cands:
+                    top = cands[0]
+                    best_li_score = top["score"]
+                    best_li_title = top["title"]
+                    best_li_snippet = top["snippet"]
+                    if best_li_score >= 40:
+                        found_linkedin = top["url"]
+                # Store without the bulky snippet (kept above for the columns).
+                linkedin_candidates = [
+                    {"url": c["url"], "title": c["title"], "score": c["score"]} for c in cands[:5]
+                ]
             except Exception as e:
                 print(f"DDG LinkedIn Search failed: {e}")
     except Exception as e:
@@ -453,6 +474,11 @@ def fetch_web_presence(company_name_clean, company_name_strict):
             best_li_score = SITE_LINKEDIN_SCORE
             best_li_title = None
             best_li_snippet = None
+            # Self-declared on the site = reliable, so surface it as the top pick.
+            linkedin_candidates = (
+                [{"url": site_li, "title": "(from the company website)", "score": SITE_LINKEDIN_SCORE}]
+                + [c for c in linkedin_candidates if c["url"] != site_li]
+            )[:5]
 
     # --- Combine the two scores into one confidence number ---
     web_status = "high" if best_score >= 70 else "low" if best_score >= WEBSITE_MIN_SCORE else "none"
@@ -483,6 +509,8 @@ def fetch_web_presence(company_name_clean, company_name_strict):
         "website_score": best_score,
         "linkedin_score": best_li_score,
         "confidence_score": combined_score,
+        "website_candidates": website_candidates,
+        "linkedin_candidates": linkedin_candidates,
     }
 
 

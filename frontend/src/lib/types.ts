@@ -39,8 +39,16 @@ export interface Lead {
   export_activity?: boolean | null;
   director_change_recent?: boolean | null;
   is_nabd?: boolean | null;
+  website_candidates?: SourceCandidate[] | null;
+  linkedin_candidates?: SourceCandidate[] | null;
   // catch-all for the remaining columns
   [key: string]: unknown;
+}
+
+export interface SourceCandidate {
+  url: string;
+  title: string;
+  score: number;
 }
 
 export interface ClassifiedLead {
