@@ -21,6 +21,66 @@ def get_settings() -> dict:
     return {"qualify_percent": get_qualify_percent(), "qualify_bar": get_qualify_bar()}
 
 
+@router.get("/stats")
+def pipeline_stats() -> dict:
+    """Pipeline-health counts + how many scored leads clear the current bar."""
+    bar = get_qualify_bar()
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT
+              COUNT(*) AS total,
+              COUNT(*) FILTER (WHERE status = 'screened_out') AS screened_out,
+              COUNT(*) FILTER (WHERE status = 'sourced') AS awaiting_enrichment,
+              COUNT(*) FILTER (WHERE status = 'ready_for_swipe' AND lead_score >= :bar) AS qualified,
+              COUNT(*) FILTER (WHERE status = 'ready_for_swipe'
+                               AND assigned_ae_username IS NULL AND lead_score >= :bar) AS awaiting_allocation,
+              AVG(lead_score) FILTER (WHERE status = 'ready_for_swipe' AND lead_score >= :bar) AS avg_qualified,
+              COUNT(*) FILTER (WHERE lead_score IS NOT NULL) AS scored,
+              COUNT(*) FILTER (WHERE lead_score >= :bar) AS passing
+            FROM sales_leads
+        """), {"bar": bar}).mappings().fetchone() or {}
+    return {
+        "total": row.get("total") or 0,
+        "screened_out": row.get("screened_out") or 0,
+        "awaiting_enrichment": row.get("awaiting_enrichment") or 0,
+        "qualified": row.get("qualified") or 0,
+        "awaiting_allocation": row.get("awaiting_allocation") or 0,
+        "avg_qualified": round(float(row.get("avg_qualified") or 0)),
+        "scored": row.get("scored") or 0,
+        "passing": row.get("passing") or 0,
+        "bar": bar,
+        "qualify_percent": get_qualify_percent(),
+    }
+
+
+@router.get("/ae-performance")
+def ae_performance() -> list[dict]:
+    """Per-AE workload: leads remaining to swipe, total assigned, approvals, and
+    SF entries (leads classified into a CRM status)."""
+    query = text("""
+        SELECT u.username AS ae,
+               COALESCE(la.total_assigned, 0) AS total_assigned,
+               COALESCE(la.remaining, 0)      AS remaining,
+               COALESCE(la.approved, 0)       AS approved,
+               COALESCE(sf.sf_entry, 0)       AS sf_entry
+        FROM users u
+        LEFT JOIN (
+            SELECT assigned_ae_username AS ae,
+                   SUM(CASE WHEN status IN ('ready_for_swipe','approved','archived') THEN 1 ELSE 0 END) AS total_assigned,
+                   SUM(CASE WHEN status = 'ready_for_swipe' THEN 1 ELSE 0 END) AS remaining,
+                   SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved
+            FROM sales_leads WHERE assigned_ae_username IS NOT NULL GROUP BY 1
+        ) la ON la.ae = u.username
+        LEFT JOIN (
+            SELECT swiped_by AS ae, COUNT(DISTINCT lead_id) AS sf_entry
+            FROM ml_pipeline_analytics WHERE crm_status IS NOT NULL GROUP BY 1
+        ) sf ON sf.ae = u.username
+        ORDER BY remaining DESC, u.username
+    """)
+    with engine.connect() as conn:
+        return [dict(r) for r in conn.execute(query).mappings().fetchall()]
+
+
 @router.put("/settings/qualify-percent")
 def set_percent(body: QualifyPercentRequest) -> dict:
     pct = max(0, min(100, int(body.percent)))
@@ -62,6 +122,17 @@ def recent_jobs() -> list[dict]:
             select(pipeline_jobs).order_by(pipeline_jobs.c.id.desc()).limit(20)
         ).mappings().fetchall()
     return [dict(r) for r in rows]
+
+
+@router.post("/pipeline-jobs/{job_id}/cancel")
+def cancel_job(job_id: int) -> dict:
+    """Cancel a queued/running job (the worker checks status between leads)."""
+    with engine.begin() as conn:
+        result = conn.execute(text("""
+            UPDATE pipeline_jobs SET status = 'cancelled', updated_at = now()
+            WHERE id = :i AND status IN ('pending', 'running')
+        """), {"i": job_id})
+    return {"cancelled": result.rowcount > 0}
 
 
 @router.get("/health")

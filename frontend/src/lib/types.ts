@@ -99,6 +99,27 @@ export interface AllocationRow {
   "Now Pending": number;
 }
 
+export interface AdminStats {
+  total: number;
+  screened_out: number;
+  awaiting_enrichment: number;
+  qualified: number;
+  awaiting_allocation: number;
+  avg_qualified: number;
+  scored: number;
+  passing: number;
+  bar: number;
+  qualify_percent: number;
+}
+
+export interface AePerformance {
+  ae: string;
+  total_assigned: number;
+  remaining: number;
+  approved: number;
+  sf_entry: number;
+}
+
 export interface PipelineJob {
   id: number;
   job_type: string;
@@ -111,6 +132,34 @@ export interface PipelineJob {
   requested_by: string | null;
   created_at: string | null;
   finished_at: string | null;
+}
+
+export interface Analytics {
+  totals: { decided: number; approved: number; approval_rate: number };
+  sic: { sic: string; label: string; total: number; approved: number; rate: number }[];
+  feature_correlations: { feature: string; corr: number; n: number }[];
+  crm_breakdown: {
+    crm_status: string;
+    count: number;
+    avg_cash: number | null;
+    avg_staff: number | null;
+    avg_fx: number | null;
+    avg_turnover: number | null;
+    avg_score: number | null;
+  }[];
+  score_calibration: { band: string; decided: number; approved: number; rate: number }[];
+  score_factors: {
+    band: string;
+    decided: number;
+    rate: number;
+    avg_cash: number | null;
+    avg_staff: number | null;
+    avg_fx: number | null;
+    avg_turnover: number | null;
+    avg_debtors: number | null;
+    avg_creditors: number | null;
+  }[];
+  coverage: { field: string; populated: number; total: number; pct: number }[];
 }
 
 export interface PipelineHealth {

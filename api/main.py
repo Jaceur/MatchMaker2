@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .routers import auth, leads, pipeline, me, leaderboard, admin
+from .routers import auth, leads, pipeline, me, leaderboard, admin, analytics
 
 app = FastAPI(title="Matchmaker 2.0 API", version="0.1.0")
 
@@ -31,6 +31,7 @@ app.include_router(pipeline.router)
 app.include_router(me.router)
 app.include_router(leaderboard.router)
 app.include_router(admin.router)
+app.include_router(analytics.router)
 
 
 @app.get("/health", tags=["meta"])
