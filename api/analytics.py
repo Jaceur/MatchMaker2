@@ -70,14 +70,12 @@ def _sic_reference() -> tuple[dict, dict]:
 
 
 def _primary_sic(df: pd.DataFrame) -> pd.DataFrame:
-    """Rows with a non-empty primary (first-listed) SIC code, normalised to the
-    5-digit zero-padded form Companies House uses — matching sic_data."""
+    """Rows with a non-empty primary (first-listed) SIC code, as Companies House
+    reported it. No zero-padding here, matching sic_data.parse_sic_codes — see
+    the reasoning in its docstring."""
     d = df.copy()
     d["sic"] = d["sic_codes"].fillna("").astype(str).str.split(",").str[0].str.strip()
-    d = d[d["sic"] != ""]
-    if not d.empty:
-        d["sic"] = d["sic"].str.zfill(5)
-    return d
+    return d[d["sic"] != ""]
 
 
 def _sic_breakdown(df: pd.DataFrame, labels: dict) -> list[dict]:

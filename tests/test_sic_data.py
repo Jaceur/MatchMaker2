@@ -66,12 +66,19 @@ def test_csv_low_code_is_padded_and_resolves():
 
 
 def test_ch_extras_are_absent_from_the_official_csv():
-    """The reason CH_EXTRA_CODES exists: Companies House issues 99999 (dormant)
-    and 98000 outside the official SIC list, and both appear on real leads. If a
-    future CSV adds them, the extras become redundant rather than load-bearing."""
+    """The reason CH_EXTRA_CODES exists: Companies House issues 74990, 99999 and
+    98000 outside the official SIC list, and all three appear on real leads
+    (74990 alone was on 111 at the 2026-07-16 load). If a future CSV adds them,
+    the extras become redundant rather than load-bearing."""
     records = read_sic_csv()
     for code in CH_EXTRA_CODES:
         assert code not in records
+
+
+def test_ch_extras_cover_every_special_code():
+    """Regression guard: 74990 was missed on the first pass and left 111 leads
+    rendering a bare code. These are the full set CH issues outside SIC 2007."""
+    assert set(CH_EXTRA_CODES) == {"74990", "98000", "99999"}
 
 
 # ==========================================
@@ -81,12 +88,22 @@ def test_ch_extras_are_absent_from_the_official_csv():
     ("62012, 62020", ["62012", "62020"]),   # the ", ".join form sourcing.py writes
     ("62012,62020", ["62012", "62020"]),
     ("68209,68310,", ["68209", "68310"]),   # trailing comma
-    ("1110", ["01110"]),                    # padded on the way in
+    ("01110", ["01110"]),                   # CH's own zero-padded form, untouched
     (None, []),
     ("", []),
 ])
 def test_parse_sic_codes(raw, expected):
     assert parse_sic_codes(raw) == expected
+
+
+def test_parse_does_not_pad_legacy_sic_2003_codes():
+    """The CSV reader pads 4-digit codes, but lead data must NOT be padded: CH
+    sends 5-digit SIC 2007, so a 4-digit code on a lead is a retired SIC 2003 one
+    (7414/7487 are both live in the pool). Padding would invent a code — and
+    SIC 2003 '1110' (crude petroleum) would pad into SIC 2007 '01110' (growing
+    cereals) and render a confidently wrong description."""
+    assert parse_sic_codes("7414") == ["7414"]
+    assert parse_sic_codes("1110") == ["1110"]
 
 
 def test_describe_sic_codes_keeps_order_and_resolves(monkeypatch):

@@ -34,10 +34,11 @@ except ImportError:
 
 CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "uk_sic_codes.csv")
 
-# Companies House issues these two outside the official SIC 2007 list, and both
-# turn up on real leads (dormant shells especially), so the CSV can't be the
-# whole story. code -> (description, our grouping).
+# Companies House issues these three outside the official SIC 2007 list, so the
+# CSV can't be the whole story. They are NOT rare: at the 2026-07-16 load, 74990
+# alone was on 111 leads. code -> (description, our grouping).
 CH_EXTRA_CODES = {
+    "74990": ("Non-trading company", "Other"),
     "99999": ("Dormant company", "Other"),
     "98000": ("Residents property management", "Real estate activities"),
 }
@@ -136,10 +137,19 @@ def get_sic_records():
 
 def parse_sic_codes(sic_codes):
     """The stored comma-separated `sales_leads.sic_codes` string -> a clean list
-    of normalised codes. Tolerates None, spaces, and trailing commas."""
+    of codes exactly as Companies House reported them. Tolerates None, spaces,
+    and trailing commas.
+
+    Deliberately does NOT zero-pad, unlike the CSV reader. CH always sends
+    5-digit SIC 2007 codes (verified against the live pool: every lead code is
+    5 digits except two legacy stragglers), so a 4-digit code here is a retired
+    SIC 2003 one — e.g. 7414. Padding it would invent a code that doesn't exist,
+    and could actively mislead: SIC 2003 '1110' is crude petroleum extraction,
+    but padded to '01110' it would read as "Growing of cereals". Better to show
+    the real code with no description than a confident wrong one."""
     if not sic_codes:
         return []
-    return [_normalise_code(c) for c in str(sic_codes).split(",") if c.strip()]
+    return [c.strip() for c in str(sic_codes).split(",") if c.strip()]
 
 
 def describe_sic_codes(sic_codes):

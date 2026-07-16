@@ -75,10 +75,20 @@ without it; they fall back to env vars + `lru_cache` in place of `st.secrets` + 
   the table is now **replaced wholesale** from `data/uk_sic_codes.csv` (728 codes) by
   `load_sic_lookup()`, which runs on **API startup** (`api/main.py` lifespan) — so a deploy is all
   it takes to pick up an edited CSV. Manual path: `python sic_data.py`.
-  Two gotchas baked into `sic_data.py`, don't undo them: (1) the CSV drops the leading zero on
-  codes < 10000 (`1110`), while CH always sends `01110` — everything is **zero-padded to 5 digits**;
-  (2) CH issues `99999` (dormant) and `98000` outside the official list, so they live in
-  `CH_EXTRA_CODES` and are merged in at load — a plain CSV replace would lose them.
+  **Loaded into Supabase 2026-07-16: 731 codes, 67 groups; 570/572 of the codes in use across the
+  15,261 leads resolve (99.98% of leads).** Three gotchas baked into `sic_data.py`, don't undo them:
+  1. **The CSV is zero-padded on read, lead data is NOT.** The CSV drops the leading zero on codes
+     < 10000 (`1110` = SIC 2007 `01110`), so `read_sic_csv` pads it. But CH always sends 5-digit
+     SIC 2007, so a 4-digit code *on a lead* is a retired **SIC 2003** code (`7414`, `7487` — 3
+     leads, the only non-5-digit codes in the pool). Padding those would invent a code, and
+     SIC 2003 `1110` (crude petroleum) would pad into `01110` (growing cereals) and render a
+     confidently wrong description. Hence `parse_sic_codes` deliberately does not pad.
+  2. **CH issues three codes outside the official list** — `74990` (non-trading), `99999` (dormant),
+     `98000` (residents property mgmt) — so they live in `CH_EXTRA_CODES` and are merged in at load;
+     a plain CSV replace loses them. Not rare: **74990 alone is on 111 leads**.
+  3. The live table also has a stale **`category`** column (abandoned hand-grouping: 2 of 71 rows
+     filled, one value literally `'Farming\r\n'`). Not in `models.py`, read by nothing —
+     **safe to `ALTER TABLE sic_lookup DROP COLUMN category`**.
 - All via the idempotent auto-migration blocks in `models.py` (`_ADDED_COLUMNS` + per-table ALTERs). **Adding a column = add to the Table + the migration block. And keep `pipeline_archive` in sync with `sales_leads`** — "Clear Pipeline" copies by column name and ERRORS if the archive is missing columns (this bit us once already).
 - CRM statuses (classify dropdown): **"Won" is retired for GDPR**. Now: `Net New`,
   `Existing Lead - Unclaimed/Already Claimed`, `Existing Account - Unclaimed/Already Claimed`,
@@ -148,23 +158,40 @@ clear pipeline w/ confirm).
 ## 9. NEXT TASK — SIC-code screening (user request, 2026-07-15)
 
 The user wants to **start screening out poor SIC codes — "maybe not completely"** — e.g.
-pubs/restaurants and real estate. The data supports it (475-lead sample): food service
-(56101/56102/56302), construction trades (43991/43999), real-estate letting (68209) and
-education (85100) all **0% approval** (n=5–8 each); software 62012 = 88%.
+pubs/restaurants and real estate.
+
+> ### ⚠️ READ THIS BEFORE ACTING ON THE NUMBERS BELOW
+> The original guidance here was built on a **475-lead sample where the damning codes had n=5–8**.
+> The pool is now **942 decided / 481 approved (51% baseline)**, and the new
+> `sic_lookup.section` grouping (§3) pools codes into samples of n=21–85. **Most of the "0%
+> approval" findings did not survive.** Re-measured 2026-07-16:
+>
+> | | old claim (n=5–8) | now | verdict |
+> |---|---|---|---|
+> | Food service (`56101/56102/56302`) | 0% | **17%** group (11/65) | **real** — worst group, but not zero |
+> | Construction trades (`43991/43999`) | 0% | `43999` **62%** (8/13); **Construction group 58%** (49/85) | **noise — screening this would have been a mistake** |
+> | Real-estate letting (`68209`) | 0% | **27%** (3/11); Real estate group 39% (14/36) | weak-ish, small n |
+> | Education (`85100`) | 0% | **0%** (0/9) | holds, but n=9 |
+> | Software (`62012`) | 88% | **86%** (12/14); Software/Data group **84%** (36/43) | **holds** |
+> | Real estate buy/sell (`68100`) | 60% | **30%** (3/10) | **reversed** |
+>
+> Lesson: at n≈10 a SIC code's rate is nearly meaningless. **Use the group view to decide *whether*
+> a territory is weak, then the code view to decide *what* to screen** — and re-measure rather than
+> trusting any number written here.
 
 Design guidance for the implementer:
 - **"Not completely" matters.** Prefer a **soft penalty in `scoring.py`** (e.g. a SIC-based
   strength/multiplier on the noisy-OR, or a subtraction) or a **config-driven SIC list**
   (app_settings or a table, editable from admin) feeding a Stage A gate — NOT a hardcoded drop.
+  The table above is the argument for soft: food service at 17% still converts 1 in 6.
 - **Never bypass the holdout.** Screened-by-SIC leads must still ride the 5% holdout unfiltered,
   or SIC screening biases exactly the training data that just proved SIC is predictive.
-- Careful with granularity: 68100 (real estate *buying/selling*) approved at 60% in the sample
-  while 68209 (letting) was 0% — screen at 5-digit level, not the whole 68 division.
-- **`sic_lookup.section` now exists** (see §3) and is a ready-made handle for this: it groups the
-  728 codes into 67 business categories, and the analytics board already charts approval per group.
-  It respects the granularity point above — 68100 and 68209 are both "Real estate activities", so
-  a group-level screen would still be too blunt there; use it to *find* the weak groups, then screen
-  by 5-digit code.
+- Careful with granularity: 68100 and 68209 are both "Real estate activities" but sit at 30% vs
+  27% — and `43999` (62%) vs `43991` (17%) split *inside* Construction. So **screen at 5-digit
+  level, not by group and not by division**; the group is a lens for finding candidates, not the
+  screening key.
+- **`sic_lookup.section` (§3)** is the ready-made handle: 731 codes → 67 groups, and the analytics
+  board's top chart already ranks approval per group with usable sample sizes.
 - Log the reason (`screen_reason = "Stage A · SIC …"`) so the analytics board shows the effect.
 
 ## 10. Other open items
