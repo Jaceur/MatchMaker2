@@ -9,13 +9,31 @@ shared modules import cleanly:
 Requires the same DB env vars the workers use (DB_PASSWORD + SUPABASE_*), plus
 optionally JWT_SECRET and CORS_ORIGINS — see api/.env.example.
 """
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .routers import auth, leads, pipeline, me, leaderboard, admin, analytics
 
-app = FastAPI(title="Matchmaker 2.0 API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load the SIC reference table from data/uk_sic_codes.csv once per process,
+    mirroring the Streamlit app's _seed_sic_once. It's an idempotent ~730-row
+    upsert, so a deploy is all it takes to pick up an edited CSV — no manual
+    step, no local DB credentials. Wrapped so a failure can never block boot:
+    sic_data falls back to reading the CSV off disk if the table is unusable."""
+    try:
+        from sic_data import load_sic_lookup
+        print(f"SIC lookup loaded: {load_sic_lookup()} codes.")
+    except Exception as e:
+        print(f"SIC seed skipped: {e}")
+    yield
+
+
+app = FastAPI(title="Matchmaker 2.0 API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

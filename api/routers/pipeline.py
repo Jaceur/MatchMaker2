@@ -5,6 +5,7 @@ from sqlalchemy import text
 
 from database import engine
 from directors import enrich_lead_directors, email_candidates, domain_from_url
+from sic_data import with_sic_detail
 
 from ..schemas import ClassifyRequest
 from ..security import get_current_user, CurrentUser
@@ -27,7 +28,8 @@ def unclassified(user: CurrentUser = Depends(get_current_user)) -> list[dict]:
         ORDER BY updated_at DESC, sl.id DESC
     """)
     with engine.connect() as conn:
-        return [dict(r) for r in conn.execute(query, {"username": user.username}).mappings().fetchall()]
+        rows = [dict(r) for r in conn.execute(query, {"username": user.username}).mappings().fetchall()]
+    return with_sic_detail(rows)
 
 
 @router.get("/classified")
@@ -64,7 +66,7 @@ def enrich_directors(lead_id: int, user: CurrentUser = Depends(get_current_user)
     from models import sales_leads
     with engine.connect() as conn:
         row = conn.execute(select(sales_leads).where(sales_leads.c.id == lead_id)).mappings().fetchone()
-    return dict(row)
+    return with_sic_detail(dict(row))
 
 
 @router.get("/{lead_id}/email-candidates")

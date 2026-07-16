@@ -1,114 +1,176 @@
 """SIC code reference data + loader.
 
 SIC (Standard Industrial Classification) codes are what Companies House uses to
-describe a company's nature of business. The full condensed SIC 2007 list has
-~730 codes; this seeds the common ones into the sic_lookup table. Add more
-entries here (or bulk-load the official gov.uk CSV) and re-run the loader — the
-swipe card shows the description for any code it knows, and the raw code otherwise.
+describe a company's nature of business. The full condensed SIC 2007 list lives
+in `data/uk_sic_codes.csv` (728 codes), which also carries **our own business
+grouping** per code in `Section_Description` — e.g. "Software/Data",
+"Used Car Sales", "Restaurants/Pubs/Food Service". That grouping is what the
+analytics board rolls approvals up by; it is deliberately NOT the official SIC
+section letter, because the business thinks in finer/different categories.
+
+To change the data: edit the CSV and re-run the loader (`python sic_data.py`, or
+the Streamlit app's boot hook). `load_sic_lookup()` is a full REPLACE — codes
+that vanish from the CSV are deleted from the table.
+
+Two Companies House codes are NOT in the official SIC list but appear on real
+company records, so they're added back in CH_EXTRA_CODES below.
 """
-import streamlit as st
-from sqlalchemy import select
+import csv
+import functools
+import os
+
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
 from models import sic_lookup
 
-SIC_DESCRIPTIONS = {
-    "01450": "Raising of sheep and goats",
-    "10710": "Manufacture of bread and fresh pastry goods and cakes",
-    "16290": "Manufacture of other products of wood, cork, straw and plaiting materials",
-    "18120": "Printing (other than printing of newspapers)",
-    "25620": "Machining",
-    "31090": "Manufacture of other furniture",
-    "33120": "Repair of machinery",
-    "41100": "Development of building projects",
-    "41201": "Construction of commercial buildings",
-    "41202": "Construction of domestic buildings",
-    "43210": "Electrical installation",
-    "43220": "Plumbing, heat and air-conditioning installation",
-    "43290": "Other construction installation",
-    "43310": "Plastering",
-    "43320": "Joinery installation",
-    "43330": "Floor and wall covering",
-    "43341": "Painting",
-    "43390": "Other building completion and finishing",
-    "43999": "Other specialised construction activities not elsewhere classified",
-    "45112": "Sale of used cars and light motor vehicles",
-    "45200": "Maintenance and repair of motor vehicles",
-    "46900": "Non-specialised wholesale trade",
-    "47110": "Retail sale in non-specialised stores with food, beverages or tobacco predominating",
-    "47190": "Other retail sale in non-specialised stores",
-    "47910": "Retail sale via mail order houses or via Internet",
-    "47990": "Other retail sale not in stores, stalls or markets",
-    "49410": "Freight transport by road",
-    "55100": "Hotels and similar accommodation",
-    "56101": "Licensed restaurants",
-    "56103": "Take-away food shops and mobile food stands",
-    "56210": "Event catering activities",
-    "56302": "Public houses and bars",
-    "59112": "Video production activities",
-    "62012": "Business and domestic software development",
-    "62020": "Information technology consultancy activities",
-    "62090": "Other information technology service activities",
-    "63110": "Data processing, hosting and related activities",
-    "64209": "Activities of other holding companies not elsewhere classified",
-    "68100": "Buying and selling of own real estate",
-    "68209": "Other letting and operating of own or leased real estate",
-    "68310": "Real estate agencies",
-    "68320": "Management of real estate on a fee or contract basis",
-    "69109": "Activities of legal practice not elsewhere classified",
-    "69201": "Accounting and auditing activities",
-    "69202": "Bookkeeping activities",
-    "69203": "Tax consultancy",
-    "70210": "Public relations and communications activities",
-    "70221": "Financial management",
-    "70229": "Management consultancy activities other than financial management",
-    "71111": "Architectural activities",
-    "71121": "Engineering design activities for industrial process and production",
-    "71122": "Engineering related scientific and technical consulting activities",
-    "73110": "Advertising agencies",
-    "74100": "Specialised design activities",
-    "74201": "Portrait photographic activities",
-    "74909": "Other professional, scientific and technical activities not elsewhere classified",
-    "77110": "Renting and leasing of cars and light motor vehicles",
-    "78109": "Other activities of employment placement agencies",
-    "81210": "General cleaning of buildings",
-    "81221": "Window cleaning services",
-    "82990": "Other business support service activities not elsewhere classified",
-    "85590": "Other education not elsewhere classified",
-    "86900": "Other human health activities",
-    "90030": "Artistic creation",
-    "93110": "Operation of sports facilities",
-    "93120": "Activities of sport clubs",
-    "93130": "Fitness facilities",
-    "96020": "Hairdressing and other beauty treatment",
-    "96090": "Other service activities not elsewhere classified",
-    "98000": "Residents property management",
-    "99999": "Dormant company",
+# Streamlit is optional: the web app has it, the FastAPI backend and the
+# headless workers import this module without it (same pattern as database.py).
+try:
+    import streamlit as st
+except ImportError:
+    st = None
+
+CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "uk_sic_codes.csv")
+
+# Companies House issues these two outside the official SIC 2007 list, and both
+# turn up on real leads (dormant shells especially), so the CSV can't be the
+# whole story. code -> (description, our grouping).
+CH_EXTRA_CODES = {
+    "99999": ("Dormant company", "Other"),
+    "98000": ("Residents property management", "Real estate activities"),
 }
 
 
-def load_sic_lookup():
-    """Upsert the seed SIC descriptions into the sic_lookup table. Idempotent."""
-    rows = [{"code": c, "description": d} for c, d in SIC_DESCRIPTIONS.items()]
+def _normalise_code(raw):
+    """Companies House always reports 5-digit, zero-padded SIC codes ("01110"),
+    but the source CSV drops the leading zero on the low ones ("1110"). Pad so a
+    lead's code matches the table — without this every code below 10000
+    (agriculture, mining) would silently fail to resolve."""
+    code = str(raw).strip()
+    return code.zfill(5) if code.isdigit() and len(code) < 5 else code
+
+
+def read_sic_csv(path=CSV_PATH):
+    """The CSV as {code: (description, section)}, codes normalised to 5 digits.
+    Raises if the file is missing — a silent empty load would wipe the table."""
+    records = {}
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        for row in csv.DictReader(fh):
+            code = _normalise_code(row["SIC_Code"])
+            if not code:
+                continue
+            records[code] = (
+                (row.get("Description") or "").strip(),
+                (row.get("Section_Description") or "").strip() or None,
+            )
+    return records
+
+
+def load_sic_lookup(path=CSV_PATH):
+    """Replace the sic_lookup table with the CSV (+ the CH extras). Idempotent.
+    Returns the number of codes now in the table."""
+    records = {**read_sic_csv(path), **CH_EXTRA_CODES}
+    rows = [
+        {"code": code, "description": desc, "section": section}
+        for code, (desc, section) in sorted(records.items())
+    ]
     if not rows:
-        return 0
+        raise RuntimeError(f"No SIC rows parsed from {path} — refusing to clear the table.")
+
     stmt = pg_insert(sic_lookup).values(rows)
     stmt = stmt.on_conflict_do_update(
         index_elements=["code"],
-        set_={"description": stmt.excluded.description},
+        set_={"description": stmt.excluded.description, "section": stmt.excluded.section},
     )
     with engine.begin() as conn:
         conn.execute(stmt)
+        # A true replace: drop codes the CSV no longer lists (the old hand-seeded
+        # descriptions that aren't in the official list).
+        conn.execute(delete(sic_lookup).where(sic_lookup.c.code.notin_(list(records))))
+    _clear_sic_cache()
     return len(rows)
 
 
-@st.cache_data(ttl=3600)
-def get_sic_lookup():
-    """code -> description, read from the table and cached for the session."""
+def _clear_sic_cache():
+    """Drop the cached lookup so a fresh load is visible immediately. The two
+    cache decorators name this differently — st.cache_data gives .clear(),
+    lru_cache gives .cache_clear() — and neither has the other's method."""
+    for attr in ("clear", "cache_clear"):
+        clear = getattr(get_sic_records, attr, None)
+        if callable(clear):
+            clear()
+            return
+
+
+def _cache(func):
+    """Streamlit's data cache inside the app (shared across reruns); a plain
+    lru_cache singleton for the API/workers, where st.cache_data isn't available."""
+    if st is not None:
+        return st.cache_data(ttl=3600)(func)
+    return functools.lru_cache(maxsize=1)(func)
+
+
+@_cache
+def get_sic_records():
+    """code -> {"description", "section"}, read from the table and cached.
+    Falls back to the CSV on the disk if the table read fails, so a lead card
+    never renders bare codes just because the DB hiccuped."""
     try:
         with engine.connect() as conn:
             rows = conn.execute(select(sic_lookup)).mappings().fetchall()
-        return {r["code"]: r["description"] for r in rows}
+        if rows:
+            return {
+                r["code"]: {"description": r["description"], "section": r["section"]}
+                for r in rows
+            }
     except Exception:
-        return dict(SIC_DESCRIPTIONS)   # fall back to the seed if the table read fails
+        pass
+    try:
+        records = {**read_sic_csv(), **CH_EXTRA_CODES}
+        return {c: {"description": d, "section": s} for c, (d, s) in records.items()}
+    except Exception:
+        return {}
+
+
+def parse_sic_codes(sic_codes):
+    """The stored comma-separated `sales_leads.sic_codes` string -> a clean list
+    of normalised codes. Tolerates None, spaces, and trailing commas."""
+    if not sic_codes:
+        return []
+    return [_normalise_code(c) for c in str(sic_codes).split(",") if c.strip()]
+
+
+def describe_sic_codes(sic_codes):
+    """A lead's sic_codes string -> [{code, description, section}], in the order
+    Companies House lists them (first = primary). Unknown codes still come back,
+    with a null description, so the card can show the bare code rather than drop
+    it."""
+    records = get_sic_records()
+    out = []
+    for code in parse_sic_codes(sic_codes):
+        rec = records.get(code)
+        out.append({
+            "code": code,
+            "description": rec["description"] if rec else None,
+            "section": rec["section"] if rec else None,
+        })
+    return out
+
+
+def with_sic_detail(leads):
+    """Attach `sic_detail` to a lead dict (or a list of them) for the API, so the
+    frontend renders "01110 — Growing of cereals…" without its own lookup table.
+    Mutates and returns the input."""
+    if isinstance(leads, dict):
+        leads["sic_detail"] = describe_sic_codes(leads.get("sic_codes"))
+        return leads
+    for lead in leads:
+        lead["sic_detail"] = describe_sic_codes(lead.get("sic_codes"))
+    return leads
+
+
+if __name__ == "__main__":
+    print(f"Loading SIC codes from {CSV_PATH} …")
+    print(f"Done — {load_sic_lookup()} codes in sic_lookup.")

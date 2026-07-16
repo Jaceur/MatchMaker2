@@ -13,6 +13,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from database import engine
+from sic_data import get_sic_records
 
 # Numeric features we test for correlation with approval + summarise per band.
 NUMERIC_FEATURES = {
@@ -56,21 +57,34 @@ def _decided_frame() -> pd.DataFrame:
     return df
 
 
-def _sic_labels() -> dict:
-    with engine.connect() as conn:
-        rows = conn.execute(text("SELECT code, description FROM sic_lookup")).fetchall()
-    return {str(code): desc for code, desc in rows}
+def _sic_reference() -> tuple[dict, dict]:
+    """(code -> description, code -> our business grouping).
+
+    Goes through sic_data rather than querying sic_lookup directly so there's one
+    source of truth — and so the board still groups correctly via its CSV
+    fallback if the table hasn't been loaded yet."""
+    records = get_sic_records()
+    labels = {code: rec["description"] for code, rec in records.items()}
+    sections = {code: rec["section"] for code, rec in records.items()}
+    return labels, sections
+
+
+def _primary_sic(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows with a non-empty primary (first-listed) SIC code, normalised to the
+    5-digit zero-padded form Companies House uses — matching sic_data."""
+    d = df.copy()
+    d["sic"] = d["sic_codes"].fillna("").astype(str).str.split(",").str[0].str.strip()
+    d = d[d["sic"] != ""]
+    if not d.empty:
+        d["sic"] = d["sic"].str.zfill(5)
+    return d
 
 
 def _sic_breakdown(df: pd.DataFrame, labels: dict) -> list[dict]:
     """Top 20 primary SIC codes by volume, with approval rate."""
     if df.empty:
         return []
-    d = df.copy()
-    d["sic"] = (
-        d["sic_codes"].fillna("").astype(str).str.split(",").str[0].str.strip()
-    )
-    d = d[d["sic"] != ""]
+    d = _primary_sic(df)
     if d.empty:
         return []
     grp = d.groupby("sic").agg(total=("id", "size"), approved=("approved", "sum"))
@@ -79,6 +93,33 @@ def _sic_breakdown(df: pd.DataFrame, labels: dict) -> list[dict]:
         {
             "sic": r["sic"],
             "label": labels.get(r["sic"], "Unknown"),
+            "total": int(r["total"]),
+            "approved": int(r["approved"]),
+            "rate": round(r["approved"] / r["total"] * 100),
+        }
+        for _, r in grp.iterrows()
+    ]
+
+
+def _sic_group_breakdown(df: pd.DataFrame, sections: dict) -> list[dict]:
+    """Approval rate per business grouping (sic_lookup.section) of the primary
+    SIC code. Coarser than the per-code view — each group pools many codes, so
+    the sample sizes are big enough to read a real signal off, which is what the
+    per-code table can't give you at 5–8 leads a code."""
+    if df.empty:
+        return []
+    d = _primary_sic(df)
+    if d.empty:
+        return []
+    d["group"] = d["sic"].map(sections)
+    d = d[d["group"].notna() & (d["group"] != "")]
+    if d.empty:
+        return []
+    grp = d.groupby("group").agg(total=("id", "size"), approved=("approved", "sum"))
+    grp = grp.sort_values("total", ascending=False).reset_index()
+    return [
+        {
+            "group": r["group"],
             "total": int(r["total"]),
             "approved": int(r["approved"]),
             "rate": round(r["approved"] / r["total"] * 100),
@@ -197,7 +238,7 @@ def _coverage() -> list[dict]:
 
 def compute_analytics() -> dict:
     df = _decided_frame()
-    labels = _sic_labels()
+    labels, sections = _sic_reference()
     decided = int(len(df))
     approved = int(df["approved"].sum()) if not df.empty else 0
     calibration, factors = _score_bands(df)
@@ -208,6 +249,7 @@ def compute_analytics() -> dict:
             "approval_rate": round(approved / decided * 100) if decided else 0,
         },
         "sic": _sic_breakdown(df, labels),
+        "sic_groups": _sic_group_breakdown(df, sections),
         "feature_correlations": _correlations(df),
         "crm_breakdown": _crm_breakdown(df),
         "score_calibration": calibration,

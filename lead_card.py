@@ -7,7 +7,7 @@ banner, chips and metric tiles. No DB or page-specific state.
 import streamlit as st
 
 from scoring import account_tier
-from sic_data import get_sic_lookup
+from sic_data import describe_sic_codes
 
 
 def fmt_money(v):
@@ -110,14 +110,13 @@ def render_profile(lead):
     g3.metric("💱 FX gain/loss", fmt_money(lead.get('foreign_exchange')))
 
     # Nature of business — SIC codes with their Companies House descriptions.
-    codes = [c.strip() for c in (lead.get('sic_codes') or "").split(",") if c.strip()]
+    codes = describe_sic_codes(lead.get('sic_codes'))
     if codes:
-        lookup = get_sic_lookup()
         st.markdown("<div class='mm-label'>Nature of business — SIC codes</div>",
                     unsafe_allow_html=True)
         for c in codes:
             st.markdown(
-                f"<div style='font-size:.85rem; margin-top:2px'>🏭 <b>{c}</b> — "
-                f"{lookup.get(c, 'description not loaded')}</div>",
+                f"<div style='font-size:.85rem; margin-top:2px'>🏭 <b>{c['code']}</b> — "
+                f"{c['description'] or 'description not loaded'}</div>",
                 unsafe_allow_html=True,
             )

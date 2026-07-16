@@ -1,6 +1,6 @@
 "use client";
 
-import type { Lead } from "@/lib/types";
+import type { Lead, SicDetail } from "@/lib/types";
 import { Chip, CopyButton } from "./ui";
 import { formatMoney, formatDate, companyAge, accountTier } from "@/lib/format";
 
@@ -27,6 +27,40 @@ function initials(name: string): string {
   const picked = (words.length ? words : name.split(/\s+/)).slice(0, 2);
   const letters = picked.map((w) => w[0]?.toUpperCase() || "").join("");
   return letters || name.slice(0, 2).toUpperCase();
+}
+
+// Nature of business: one line per SIC code, "01110 — Growing of cereals…".
+// Falls back to the raw comma-separated codes for leads served by an API old
+// enough not to send sic_detail.
+function SicList({ lead }: { lead: Lead }) {
+  const detail: SicDetail[] = lead.sic_detail?.length
+    ? lead.sic_detail
+    : (lead.sic_codes ?? "")
+        .split(",")
+        .map((c) => c.trim())
+        .filter(Boolean)
+        .map((code) => ({ code, description: null, section: null }));
+
+  if (detail.length === 0) return null;
+
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-muted">Nature of business</div>
+      <ul className="mt-1 space-y-0.5">
+        {detail.map((s) => (
+          <li key={s.code} className="flex gap-1.5 text-xs leading-snug">
+            <span className="shrink-0 font-mono font-medium text-foreground">{s.code}</span>
+            {s.description && (
+              <>
+                <span className="text-muted">—</span>
+                <span className="text-muted">{s.description}</span>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function Stat({ label, value }: { label: string; value: string | null }) {
@@ -105,11 +139,7 @@ export function LeadProfile({ lead }: { lead: Lead }) {
           </div>
         )}
 
-        {lead.sic_codes && (
-          <div className="text-sm text-muted">
-            <span className="font-medium text-foreground">SIC:</span> {lead.sic_codes}
-          </div>
-        )}
+        <SicList lead={lead} />
       </div>
     </div>
   );

@@ -33,8 +33,8 @@ The worker keeps building with Nixpacks + the root `requirements.txt`, untouched
    | Key | Value |
    |---|---|
    | `DB_PASSWORD` | *(your Supabase DB password, from `.streamlit/secrets.toml`)* |
-   | `SUPABASE_HOST` | `aws-0-eu-west-1.pooler.supabase.com` |
-   | `SUPABASE_USER` | `postgres.grkwrvxerhyvusuvprmu` |
+   | `SUPABASE_HOST` | `aws-0-<region>.pooler.supabase.com` *(from your Supabase dashboard → Connect → Session pooler)* |
+   | `SUPABASE_USER` | `postgres.<project-ref>` *(same place)* |
    | `SUPABASE_PORT` | `5432` |
    | `SUPABASE_DBNAME` | `postgres` |
    | `CH_API_KEY` | *(Companies House REST key, from `.streamlit/secrets.toml`)* — needed for director enrichment |

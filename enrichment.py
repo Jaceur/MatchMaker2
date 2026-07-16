@@ -501,6 +501,10 @@ def fetch_web_presence(company_name_clean, company_name_strict):
     print(f" -> Website: {found_domain} ({web_status})")
     print(f" -> LinkedIn: {found_linkedin} ({li_status})")
     print(f" -> CONFIDENCE: {combined_score}")
+    print(f" -> Website candidates ({len(website_candidates)}): "
+          + ", ".join(f"{c['url']}[{c['score']}]" for c in website_candidates))
+    print(f" -> LinkedIn candidates ({len(linkedin_candidates)}): "
+          + ", ".join(f"{c['url']}[{c['score']}]" for c in linkedin_candidates))
     return {
         "website_url": found_domain,
         "linkedin_url": found_linkedin,

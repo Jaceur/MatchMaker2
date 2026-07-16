@@ -1,314 +1,223 @@
 # Matchmaker 2.0 — Handover
 
-A Streamlit lead-triage app. It sources UK companies from Companies House, runs them through a
-**staged enrichment pipeline** (cheap checks first, expensive ones last), **scores each for sales
-fit**, and lets Account Executives (AEs) "swipe" through qualified leads Tinder-style — Pass or
-Approve — then classify approved leads into Salesforce CRM statuses. Includes a points/leaderboard
-system and an admin control centre.
+A lead-triage platform. It sources UK companies from Companies House, runs them through a
+**staged enrichment pipeline** (cheap checks first, expensive last), **scores each for sales
+fit**, and lets AEs swipe qualified leads Tinder-style — Pass or Approve — then classify
+approved leads into CRM statuses. Points/leaderboard + admin control centre + analytics.
 
-> **Read this first if you're picking up the project.** The big change in the most recent work was a
-> ground-up redesign of how leads are enriched and scored (sections 4–6). The scoring model was the
-> last thing being tuned and has **one uncommitted change awaiting sign-off** — see section 9.
+> **Read this first.** The stack is **Next.js on Vercel + FastAPI on Railway**, off branch
+> `react-rebuild` (the GitHub **default** branch). All work happens here.
+>
+> **The legacy Streamlit app is RETIRED — no longer deployed anywhere (as of 2026-07-16).**
+> Its files are still in the tree (`app.py`, `*_page.py`, `lead_card.py`, `admin_panel.py`,
+> `ae_*.py`, `auth.py`, `analytics_dashboard.py`) and the root `requirements.txt` still carries
+> Streamlit because **the Railway worker builds from it** — so don't rip Streamlit out of the root
+> requirements without re-testing the worker. See §10 for the cutover cleanup this now unblocks.
+>
+> **The immediate next task is SIC-code screening — see §9 before anything else.**
 
 ---
 
-## 1. Infra & deployment
+## 1. Infra & deployment (react-rebuild stack)
 
-- **Host:** Streamlit Cloud, deploys from GitHub **`Jaceur/MatchMaker2`** (branch `main`).
-- **Entry point:** `app.py` (Streamlit Cloud → Settings → Main file path must be `app.py`).
-- **DB:** **Supabase** (managed Postgres). Reached over the **Session pooler** (IPv4-friendly; the
-  direct `db.<ref>.supabase.co` host is IPv6-only and unreachable from Streamlit Cloud) using the
-  pure-Python `pg8000` driver + TLS. All connection logic is in `database.py`. (Migrated off Google
-  Cloud SQL 2026-07-06.)
-- **Secrets** (`.streamlit/secrets.toml`, gitignored, present locally): a `[supabase]` table
-  (`host`, `port`, `user`, `dbname`), plus top-level `DB_PASSWORD` (the Supabase DB password) and
-  `CH_API_KEY`. The auth cookie is signed with an HMAC key derived from `DB_PASSWORD`, so changing
-  the DB password logs everyone out once (harmless — they just log back in).
-- **Python 3.14** on the deploy env (bleeding edge — watch for missing wheels if adding deps).
-- **Run locally:** `streamlit run app.py` (needs the secrets file + `pip install -r requirements.txt`).
-- **Git:** commits are made locally on `main`; **the user pushes** (don't push). At the time of this
-  handover `main` is level with `origin/main` apart from the uncommitted files in section 9.
+| Piece | Where | Notes |
+|---|---|---|
+| **Frontend** (`frontend/`) | **Vercel**, builds `react-rebuild` | Project setting **Root Directory = `frontend`**. Env var `NEXT_PUBLIC_API_URL` = the Railway API URL (must include `https://` — without a scheme the browser treats it as a relative path; `api.ts` now normalises this). |
+| **API** (`api/`) | **Railway** service "MatchMaker2" — `matchmaker2-production.up.railway.app` | **Docker** build via `Dockerfile.api` + `railway.api.json` (set in service Settings → Config-as-code). Deliberately NOT named `Dockerfile`/`railway.json` — a default-named file would also be applied to the worker and break it. Env vars: `DB_PASSWORD`, `SUPABASE_HOST/PORT/USER/DBNAME`, **`CH_API_KEY`** (without it director enrichment silently returns "No directors found"), `JWT_SECRET`, `CORS_ORIGINS` (exact Vercel origin, no trailing slash), `PORT=8000`. Health: `/health`; docs: `/docs`. |
+| **Worker** (`lead_worker.py`) | **Railway** service "worker" | Nixpacks + root `requirements.txt` + `Procfile` (`worker: python lead_worker.py`). Drains `pipeline_jobs` (the admin "Gather & enrich" button). Needs to run code that includes the candidates feature (commit `23f696b`+) for new leads to get candidate lists. |
+| ~~**Legacy Streamlit**~~ | — | **Retired 2026-07-16.** No longer deployed. Page files still in the tree pending cleanup (§10). |
+| **DB** | Supabase Postgres, Session pooler + `pg8000` | Connection in `database.py` (secrets.toml locally, env vars headless). |
+| **CHStream** | separate repo `Jaceur/CHStream`, own Railway service | Not part of this repo anymore. |
+
+**Local dev:** API needs its own venv (`.venv-api`) because **the Streamlit in the root
+`requirements.txt` needs Starlette 1.x and FastAPI needs 0.41.x — they cannot share an
+environment**. (Still true even though the Streamlit *app* is retired: the root requirements
+are what the Railway worker builds from, so Streamlit is still installed there.) `pip install -r api/requirements.txt` into `.venv-api`, then from the repo root: `.venv-api\Scripts\python -m uvicorn api.main:app --reload --port 8000`. Frontend: `cd frontend && npm run dev`. Secrets: `api/.env` (gitignored, mirrors secrets.toml). Full walkthroughs in `api/README.md` and `DEPLOY.md`.
 
 ## 2. Architecture (file map)
 
-Import DAG is acyclic: `database → models → settings → {auth, leads, sourcing, enrichment, directors,
-second_enrichment, scoring, sic_data} → pipeline → {swipe_page, ae_dashboard, ae_home, admin_panel,
-leaderboard, lead_card} → app`.
+Shared Python modules at repo root (imported by the API **and** the worker — `database`, `models`,
+`settings`, `scoring`, `pipeline`, `enrichment`, `second_enrichment`, `leads`, `directors`,
+`sourcing`, `leaderboard`, `sic_data` + the `ch_*` engine). `database.py` / `leaderboard.py` /
+`sic_data.py` import Streamlit *optionally* (try/except → `st = None`) so the API venv works
+without it; they fall back to env vars + `lru_cache` in place of `st.secrets` + `st.cache_*`.
 
-| File | Responsibility |
+| New file | Responsibility |
 |---|---|
-| `app.py` | Entry: page config, password migration + SIC seed (once per process), cookie session, **routing** |
-| `database.py` | The one `engine` + `metadata` (Cloud SQL connector), imported everywhere |
-| `models.py` | **All table schemas** + `create_all` + auto-migration block (`_ADDED_COLUMNS`) |
-| `settings.py` | **Runtime settings stored in the DB** (`app_settings` table). The qualification-bar slider lives here: `get_qualify_bar()` (30–70), `get/set_qualify_percent()` (0–100%) |
-| `scoring.py` | **`score_lead(LeadFeatures) → 0-100` sales-fit score — the ML swap point** (section 6). Also `best_possible_score`, `features_from_mapping`, `account_tier` |
-| `pipeline.py` | **The staged screening pipeline** — `screen_lead` (Stage A/B/C + holdout), `run_pipeline`. Replaces the old first-then-second enrichment split (section 4) |
-| `enrichment.py` | **Building blocks** used by the pipeline: `clean_company_name`, `fetch_ch_signals` (account_type, director change), `fetch_trade_activity` (HMRC import/export), `fetch_web_presence` (DDG website + LinkedIn), `score_website_match`, `score_linkedin_match`. DDG calls are paced/retried (`_ddg_text`) |
-| `second_enrichment.py` | Parses filed **accounts documents** (iXBRL + PDF/OCR) → `second_enrich_lead(crn)` returns employee count + financials. Called as the pipeline's Stage B |
-| `leads.py` | `get_pending_leads`, `top_up_allocation` (both **gate on `lead_score ≥ get_qualify_bar()`**, order by `lead_score DESC, confidence_score DESC`), `build_ml_row`, `engineer_ml_features`, clear DB / clear pipeline, `award_activity` |
-| `sourcing.py` | Companies House advanced-search → new `sourced` leads |
-| `directors.py` | CH officers API (3 youngest directors → "First Last"), email-format candidates, `domain_from_url`. `enrich_lead_directors` **preserves `updated_at`** so enriching doesn't bump a My-Pipeline lead to the top |
-| `swipe_page.py` | `main_app` — the swipe card; validity toggles; `pass_control`; correction inputs |
-| `ae_dashboard.py` | **My Pipeline** (`render_ae_pipeline`): classify cards, `classify_lead` |
-| `ae_home.py` | **AE Dashboard** (personal: pipeline count, into-Salesforce, points, change password) |
-| `admin_panel.py` | **Admin Control Center**: cloud source+enrich job queue, clear buttons, **qualification-bar slider**, team top-up allocation, pipeline-health metrics (`screened_out` / `qualified`) |
-| `analytics_dashboard.py` | **Analytics** page (admin-only, read-only, `render_analytics`): ML-readiness gauge (labelled leads needed before training `score_lead` — counts `screening_log` ⋈ `ml_pipeline_analytics`), lead funnel, screen-out reasons, score-vs-approval calibration, enrichment coverage |
-| `leaderboard.py` | AE leaderboard + `compute_points` |
-| `lead_card.py` | **Shared `render_profile`** (the Tinder/Revolut card); `_size_chip` uses `scoring.account_tier` |
-| `sic_data.py` | SIC code reference dict + loader + cached `get_sic_lookup` |
-| `rescore_leads.py` | **Re-compute `lead_score`** for existing leads from already-stored figures (fast, no internet) — run after a scoring change |
-| `rerun_pipeline.py` | **Full re-run**: reset every non-swiped lead to `sourced` and push it back through the whole pipeline (slow, re-fetches everything) |
-| `enrich_local.py` (+ `.bat`) | **Local** pipeline runner (faster, no cloud timeout; Stage B's OCR is local-only) |
-| `test_accounts.py` | **Diagnostic — keep.** Dumps one company's accounts iXBRL tags for debugging the parser |
+| `api/main.py` | FastAPI app + CORS + router registration |
+| `api/security.py` | JWT auth (reuses `users` table + bcrypt, legacy-plaintext upgrade on login) |
+| `api/services.py` | Streamlit-free pass/approve/classify transactions (mirror the old page logic) |
+| `api/routers/` | `auth, leads (swipe), pipeline (classify), me, leaderboard, admin, analytics` |
+| `api/analytics.py` | pandas computations for the analytics board |
+| `frontend/src/lib/` | `api.ts` (fetch + token), `auth.tsx` (context), `types.ts`, `format.ts` |
+| `frontend/src/components/` | `SwipeCard` (portrait card + candidate dropdowns + pass overlay), `LeadProfile` (hero + stats grid + copy-name icon), `ClassifyCard` (SalesNav link, email vetting, CRM status), `AppShell`, `ui.tsx` (Button/Card/CopyButton/…) |
+| `frontend/src/app/(app)/` | `swipe` (deck + animations), `pipeline`, `dashboard`, `leaderboard`, `admin`, `analytics`, `new-incorps` (**stub**) |
+| `data/uk_sic_codes.csv` | **The SIC reference data** (728 codes → description + our business grouping). Source of truth for `sic_lookup`; edit it and redeploy to change the table |
+| `train_model.py` | Offline ML trainer (§8) |
+| `experiment_sic.py` | SIC target-encoding experiment (§8/§9) |
+| `backfill_screening_features.py` | One-time backfill of new screening_log columns (already run) |
+| `Dockerfile.api`, `railway.api.json`, `DEPLOY.md` | API deployment |
 
-## 3. Database tables
+## 3. Database changes since the Streamlit era
 
-- **`sales_leads`** — the working lead pool. Key columns: `crn`, `company_name`, `incorporation_date`,
-  `sic_codes`, `website_url`/`linkedin_url` (+ `corrected_*`, `*_accurate`), **`status`**
-  (`sourced` → `screened_out` *or* `ready_for_swipe` → `approved`/`archived`), `assigned_ae_username`,
-  **`lead_score`** (sales fit, the allocation gate), **`confidence_score`** (now **only** website/LinkedIn
-  data confidence — a tiebreaker, no longer the gate), `website_score`/`linkedin_score`, `account_type`,
-  `director_change_recent`/`last_director_change`, `import_activity`/`export_activity`,
-  `active_directors`/`directors_enriched`, `employee_count` + financials (`turnover`, `cash_at_bank`,
-  `foreign_exchange`, `trade_debtors`, `trade_creditors`, `admin_expenses`, `bank_loans_overdrafts`),
-  `second_enriched`, **`screen_reason`** (why a lead was screened out / kept as a holdout),
-  **`is_holdout`**, `is_nabd` (**means "Won"**), `rejection_reason`.
-- **`screening_log`** — **the ML training logbook.** One row written **per lead per pipeline run** with
-  the features seen, the `lead_score`, the `qualify_bar` at the time, whether it `qualified`, whether it
-  was a holdout, and the `screen_reason`. This is the unbiased dataset a future model trains on.
-- **`app_settings`** — key/value runtime settings (currently `qualify_percent`, the slider value).
-- **`ml_pipeline_analytics`** — older ML log; one row per Pass/classify (from `leads.build_ml_row`).
-- **`users`** — login (`username` lowercase, `password` bcrypt, `role`: `admin`/`ae`).
-- **`pipeline_archive`** — snapshot of approved leads taken on "Clear Pipeline".
-- **`director_emails`** — one row per (director × email-format guess) + the AE's verdict.
-- **`ae_stats`** — per-AE counters → leaderboard points.
-- **`sic_lookup`** — SIC code → description reference (~50 common codes seeded).
+- **`sales_leads`**: added `directors_info` JSONB (per-director `{name, officer_id, appointments, url}`),
+  `website_candidates` / `linkedin_candidates` JSONB (top-5 scored search results `{url,title,score}`).
+  **Removed from the model: `is_nabd`, `contact_email`** — the DB columns still physically exist.
+  They were kept only because the live Streamlit app selected them; **Streamlit is now retired, so
+  they are safe to drop** (§10). Nothing in the React/API stack reads them.
+- **`screening_log`** (the durable training features): added `sic_codes`, `incorporation_date`,
+  `confidence_score`, `website_score`, `linkedin_score`. Historical rows were backfilled from
+  sales_leads/pipeline_archive via `backfill_screening_features.py` (done; hard-cleared leads unrecoverable).
+- **`ml_pipeline_analytics`** (the durable labels): added `website_candidates`, `linkedin_candidates`,
+  `website_chosen`, `linkedin_chosen` — the learning-to-rank signal (candidate set + what the AE picked).
+- **`sic_lookup`**: added `section` (**our** business grouping — "Software/Data", "Used Car Sales" —
+  NOT the official SIC section letter). The old ~70-code hand-seeded dict in `sic_data.py` is gone;
+  the table is now **replaced wholesale** from `data/uk_sic_codes.csv` (728 codes) by
+  `load_sic_lookup()`, which runs on **API startup** (`api/main.py` lifespan) — so a deploy is all
+  it takes to pick up an edited CSV. Manual path: `python sic_data.py`.
+  Two gotchas baked into `sic_data.py`, don't undo them: (1) the CSV drops the leading zero on
+  codes < 10000 (`1110`), while CH always sends `01110` — everything is **zero-padded to 5 digits**;
+  (2) CH issues `99999` (dormant) and `98000` outside the official list, so they live in
+  `CH_EXTRA_CODES` and are merged in at load — a plain CSV replace would lose them.
+- All via the idempotent auto-migration blocks in `models.py` (`_ADDED_COLUMNS` + per-table ALTERs). **Adding a column = add to the Table + the migration block. And keep `pipeline_archive` in sync with `sales_leads`** — "Clear Pipeline" copies by column name and ERRORS if the archive is missing columns (this bit us once already).
+- CRM statuses (classify dropdown): **"Won" is retired for GDPR**. Now: `Net New`,
+  `Existing Lead - Unclaimed/Already Claimed`, `Existing Account - Unclaimed/Already Claimed`,
+  `Disqualified`. A data fix for old rows may still be outstanding — check and run if needed:
+  `UPDATE ml_pipeline_analytics SET crm_status='Existing Account - Already Claimed' WHERE crm_status='Won';`
 
-**Migrations:** `models.py` runs `create_all` (creates missing **tables**) + idempotent
-`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for everything in `_ADDED_COLUMNS` (lead_score,
-employee_count, the financial BIGINTs, `screen_reason`, `is_holdout`, the screening_log columns, etc.).
-**Adding a column = add it to `models.py` + `_ADDED_COLUMNS`; no manual SQL.** A fresh DB gets
-everything from `create_all`.
+## 4. The React swipe flow (differs from Streamlit)
 
-## 4. Lead lifecycle (the staged pipeline)
+Portrait Tinder-style card (hero = monogram + fit score + name + copy-icon; body = chips,
+financials grid, then **Nature of business** — one line per SIC code, `01110 — Growing of cereals…`,
+resolved server-side into `sic_detail` by `sic_data.with_sic_detail`). Next-2 cards preloaded behind, offset right + faded; approve plays a
+tick + fly-to-My-Pipeline animation; advance is **optimistic** (API call in background, rollback on failure).
+- **Sources are dropdowns** of the stored top-5 candidates (website shows domain, LinkedIn shows
+  the `/company/` slug under a fixed prefix bar) + "None found" + "Other — type it" (LinkedIn Other =
+  slug only, prefix fixed). Chosen URL → `corrected_*` if it differs from the scraped default.
+- **Pass** = grey/blur overlay with 6 reason buttons, no source questions (`website_valid` etc. now
+  null = "not asked" on passes — cleaner labels).
+- **Approve** auto-triggers **director enrichment in the background** (officers + per-director
+  appointment counts + officer-page link). The pipeline page's "Add to pipeline" button is the
+  manual fallback / re-fetch. Needs `CH_API_KEY` on the API service.
+- Classify card: **LinkedIn Search** (SalesNav company-keyword search), **Business Search**
+  (copies bare domain to clipboard — user's work laptop blocks paste INTO the app, hence
+  copy-buttons), one-at-a-time email vetting (most popular pattern first, ✓/✗, Mailmeteor link),
+  CRM status, Save.
 
-The old "first enrichment → tier → second enrichment" split was **replaced by one staged pipeline**
-(`pipeline.py`) that does cheap things first and bins a lead the moment it can't possibly qualify, so
-the slow/expensive steps only ever run on survivors.
+## 5. Pipeline / scoring — unchanged fundamentals
 
-1. **Source** (admin) → `sales_leads` `status='sourced'`.
-2. **Pipeline** (admin "Run Pipeline" button, or `enrich_local.py` / `rerun_pipeline.py` locally),
-   per lead, in `screen_lead`:
-   - **Stage A — cheap:** Companies House `account_type` + recent-director-change, HMRC import/export.
-     Compute a provisional `lead_score`. **"Start safe" gate:** bin (`status='screened_out'`) **only if
-     even the lead's `best_possible_score`** (assuming every not-yet-seen figure turns out great) **is
-     below the bar** — so a good lead is never dropped early just because its strong signals come later.
-   - **Stage B — costly:** parse the filed accounts (`second_enrich_lead`) → employees, turnover, cash,
-     FX, debtors/creditors. Re-score on the now-real figures; bin if `lead_score < bar`.
-   - **Stage C — costly:** DDG website + LinkedIn search → `confidence_score`. Set
-     `status='ready_for_swipe'`.
-   - **Holdout:** a random `HOLDOUT_RATE = 5%` of leads **skip the gates** and go through whatever they
-     score (flagged `is_holdout`, with a `screen_reason`). This keeps the training data unbiased — we get
-     outcomes for leads the filter would otherwise have binned.
-   - Every lead (qualified, screened-out, or holdout) writes a `screening_log` row.
-3. **The qualification bar** is admin-tunable (section 5). A lead qualifies when `lead_score ≥ bar`.
-4. **Allocate** (admin) → assigns qualified, unassigned leads to an AE (highest `lead_score` first).
-5. **Swipe** (AE) → validate website/LinkedIn, then **Pass** (reason → archive + ML log) or **Approve**.
-6. **My Pipeline** (AE) → "Ready to add to pipeline?" runs **director enrichment** (position preserved),
-   then classify: pick a **CRM status** + vet **director-email** guesses → **Save** (`classify_lead`
-   writes the ML row + `director_emails`; sets `is_nabd` when CRM status = "Won").
-7. **Points/Leaderboard:** `award_activity`; points = `urls_added*25 + leads_saved*50 + (swiped//20)*100`.
+Staged pipeline (`pipeline.py`): Stage A cheap CH+HMRC → best-case gate; Stage B accounts parsing
+→ realistic gate; Stage C DDG website+LinkedIn (now also stores top-5 candidates each). 5%
+**holdout** bypasses gates (unbiased training data — do not break this). `lead_score` = rules in
+`scoring.py` (noisy-OR, the ML seam); bar = admin slider (30–50 band, `settings.py`).
+`rerun_pipeline.py` now resets **only `ready_for_swipe`** leads (not screened-out).
+Admin "Gather & enrich" queues into `pipeline_jobs` for the Railway worker.
 
-## 5. The qualification bar (admin slider)
+## 6. Analytics board (admin-only, `/analytics`)
 
-- One friendly **0–100% slider** in the Admin Control Center maps onto a **30–50 `lead_score` band**:
-  **0% → bar 30** (let most real companies through), **50% → bar 40** (default), **100% → bar 50**
-  (the strongest realistically reachable). Stored in `app_settings.qualify_percent`; read via
-  `settings.get_qualify_bar()`. **Live value is currently 35 (slider 25%).** The band was 30–70 until a
-  70 fit score proved unreachable in practice — `QUALIFY_BAR_MAX` was lowered to 50. NB: the DB stores the
-  *percent*, the bar is computed in code, so a change to the band only takes effect once `settings.py` is
-  deployed (local scripts see it immediately).
-- The whole pipeline and the allocation/eligibility queries read this one value, so moving the slider
-  changes who qualifies everywhere at once. **If too many decent leads are being screened out, lower the
-  slider** rather than touching the scoring.
+Approval-by-industry-group (the `sic_lookup.section` rollup — coarser than per-code, so the
+counts are big enough to read), approval-by-SIC top-20, feature↔approval correlations, CRM-status factor breakdown, score
+calibration (does score predict approval), per-score-band factor table, enrichment coverage.
+Reads the **current pool** (cleared leads drop out) — durable-log version is a known future improvement.
 
-## 6. Scoring (`scoring.py`) — the most-iterated piece
+## 7. Admin dashboard (`/admin`)
 
-**`lead_score` = sales fit only** (how good a customer this company is likely to be). It is deliberately
-**separate from `confidence_score`** (which is just how sure we are about the website/LinkedIn we found).
-Everything calls **`score_lead(LeadFeatures) → int`** and treats it as a black box — that one function is
-**the ML seam**: when there's enough `screening_log` data, swap its body for a trained model and no caller
-changes.
+Enrichment-strength slider (commits on release), Gather & enrich (job queue + live progress
+polling + cancel), Lead distribute (default target **40**), Pipeline health metrics, AE
+performance (remaining / assigned / approvals / SF entries), cleanup (clear working pool /
+clear pipeline w/ confirm).
 
-**Current model (rules) — "minimum = pass, then diminishing".** Each signal (cash, turnover, employees,
-debtors, creditors, FX, recent director change) is mapped through a **saturating curve** to a *strength*
-in `0…~0.9`: hitting that signal's **minimum** earns ~`0.5` (so that one signal **alone** lands ≈ 50, the
-default bar); bigger magnitudes above the minimum add only a little more (diminishing). Strengths then
-**combine with diminishing returns**:
+## 8. ML status (as of 2026-07-15)
 
-```
-score = 100 * (1 - (1-s1)(1-s2)(1-s3)...)     # each signal closes part of the gap to 100
-```
+- `train_model.py`: HistGradientBoosting + ratio features, holdout-separated eval, sigmoid
+  calibration. Writes `lead_model.pkl` (gitignored). **475 labelled / 166 approvals**:
+  MODEL ROC-AUC **0.705** / PR-AUC 0.587 vs RULES 0.588/0.439; holdout (n=26, rough) 0.642 vs
+  0.509 — **model consistently beats the rules incl. on unbiased data**; calibration Brier 0.204, sane.
+- **Not wired into the app yet.** Next ML step = a `score_lead` loader behind a flag
+  (shared feature-engineering fn; model file → worker; sklearn+joblib deps; note the calibrated
+  output tops out ~60 so the qualification bar's meaning shifts to approval-probability).
+- SIC: target-encoding ≈ the native `sic_division` categorical (0.708 vs 0.705 — noise). **Not
+  worth switching**; SIC is already in the model. But the SIC *signal itself* is real (§9).
+- Tabular features are tapped out at this data size; the levers are (a) more swipes,
+  (b) a web-judgment LLM agent (reads website/LinkedIn — a genuinely new signal).
+- **Python 3.14 sklearn gotchas** (cost 3 debugging rounds): always pass a **shuffled
+  StratifiedKFold object** to CalibratedClassifierCV/cross-val (default unshuffled int-cv folds
+  can make a sparse feature all-empty → `sliding_window_view` crash); `cv="prefit"` no longer
+  exists in this sklearn; drop features with <10 non-null values before fitting.
 
-So: any one minimum passes; a genuinely strong lead climbs toward ~99 **without everyone clamping at a
-flat 100**; weak leads stay well below 50; magnitude shows through (e.g. £32m cash scores far above £1m,
-but with diminishing steps). **Dormant companies score 0.** **Companies over £30m turnover are kept, not
-eliminated** — just scored low on the turnover signal (the other signals can still carry them).
+## 9. NEXT TASK — SIC-code screening (user request, 2026-07-15)
 
-Key constants (easy to tune): `TURNOVER_MIN 1m`, `CASH_MIN 1m`, `EMPLOYEES_MIN 10`, `BALANCE_MIN 500k`
-(debtors/creditors), `FX_MIN 100k`, `SEGMENT_TURNOVER_CAP 30m`, `PASS = 0.50`.
+The user wants to **start screening out poor SIC codes — "maybe not completely"** — e.g.
+pubs/restaurants and real estate. The data supports it (475-lead sample): food service
+(56101/56102/56302), construction trades (43991/43999), real-estate letting (68209) and
+education (85100) all **0% approval** (n=5–8 each); software 62012 = 88%.
 
-**Calibration anchors it currently hits** (from the user's spec):
+Design guidance for the implementer:
+- **"Not completely" matters.** Prefer a **soft penalty in `scoring.py`** (e.g. a SIC-based
+  strength/multiplier on the noisy-OR, or a subtraction) or a **config-driven SIC list**
+  (app_settings or a table, editable from admin) feeding a Stage A gate — NOT a hardcoded drop.
+- **Never bypass the holdout.** Screened-by-SIC leads must still ride the 5% holdout unfiltered,
+  or SIC screening biases exactly the training data that just proved SIC is predictive.
+- Careful with granularity: 68100 (real estate *buying/selling*) approved at 60% in the sample
+  while 68209 (letting) was 0% — screen at 5-digit level, not the whole 68 division.
+- **`sic_lookup.section` now exists** (see §3) and is a ready-made handle for this: it groups the
+  728 codes into 67 business categories, and the analytics board already charts approval per group.
+  It respects the granularity point above — 68100 and 68209 are both "Real estate activities", so
+  a group-level screen would still be too blunt there; use it to *find* the weak groups, then screen
+  by 5-digit code.
+- Log the reason (`screen_reason = "Stage A · SIC …"`) so the analytics board shows the effect.
 
-| Lead | Target | Gets |
-|---|---|---|
-| 15 staff, nothing else | ~50 | 50 |
-| 20 staff, nothing else | ~51 | 51 |
-| 50 staff, nothing else | ~10 over a 10-person co | 58 |
-| 30 staff + £1m cash + £5m FX | ~99 | 98 |
-| 30 staff + £500k cash + £200k FX | ~80 | 84 |
-| Each single minimum (turnover £1m / cash £1m / 10 staff / debtors £500k / \|FX\|>£100k) | pass | 50–55 |
-| 4 staff + £20k cash; weak micro; dormant | fail | 22 / 7 / 0 |
+## 10. Other open items
 
-**Why the previous models were rejected:** a purely **additive** "each minimum = 50, sum, clamp 100" made
-*every* lead with two strong signals hit a flat 100 (this was the real cause of the "all my leads are
-100/100" complaint — not a display bug; allocation just served the wall of 100s first). A
-**diminishing-weights** variant fixed the clamping but penalised broad-but-shallow leads. The current
-noisy-OR model is the one that satisfies all of: minimums pass, magnitude matters, and the top end spreads
-out instead of clamping.
+1. **Uncommitted at handover time** (check `git status` — it's the truth, this list rots):
+   the ML scripts (`train_model.py`, `experiment_sic.py`, `backfill_screening_features.py`),
+   SwipeCard LinkedIn-prefix tweak, enrichment candidate console-logging, `.gitignore` ML entries,
+   the `DEPLOY.md` secret scrub, and the whole **SIC reference change** (`data/uk_sic_codes.csv`,
+   `sic_data.py`, `models.py`, `api/*`, `LeadProfile.tsx`, analytics page, `tests/test_sic_data.py`).
+   Commit+push deploys frontend (Vercel) + API (Railway) automatically — and the API deploy is what
+   loads `sic_lookup` (§3).
+2. **New Incorps page** — still a stub in the React app. The `ch_*` engine works, but its only UI
+   was the Streamlit page, which is now retired — so this is the one feature that **lost its
+   front-end at cutover**. Port `new_incorps_page.py` to React to get it back.
+3. Old `ready_for_swipe` leads only get candidate dropdowns after `python rerun_pipeline.py` (local).
+4. `score_lead` model loader behind a flag (§8).
+5. **Streamlit cutover cleanup — now unblocked** (retired 2026-07-16), each independent:
+   - Drop the dead `is_nabd` / `contact_email` columns (§3).
+   - Delete the page files: `app.py`, `swipe_page.py`, `new_incorps_page.py` (port it first, see 2),
+     `lead_card.py`, `admin_panel.py`, `ae_dashboard.py`, `ae_home.py`, `analytics_dashboard.py`,
+     `auth.py`, `lead_score_distribution.py`, `.streamlit/`.
+   - Single requirements set: only once the above are gone AND the **worker** is re-tested — it
+     builds from the root `requirements.txt`, so dropping Streamlit there is what lets `.venv-api`
+     and the venv split (§1) finally collapse into one environment.
+   - Then the optional-Streamlit shims (`database.py`, `leaderboard.py`, `sic_data.py` try/except
+     `import streamlit`) can become plain code.
+6. Vercel preview deployments are login-gated (Deployment Protection) — AEs use the production URL.
+7. Analytics on the durable logs instead of the live pool.
 
-## 7. Conventions & decisions (incl. this redesign)
+## 11. CH Lead Engine (unchanged)
 
-- **`lead_score` vs `confidence_score` stay separate** — fit vs data-confidence. Don't merge them.
-- **"Start safe":** gates are lenient by design (bin only when even the best case fails); tighten later
-  once we trust the data. The 5% **holdout** exists purely to keep the training data unbiased.
-- **`account_tier`** (in `scoring.py`, shared with `lead_card`): `total-exemption-full` and `abridged`
-  are **SMALL** companies (the word "full" is misleading) — matched before plain `full`/`group`.
-- **DDG (DuckDuckGo) search is rate-limited.** `enrichment._ddg_text` paces every search
-  (`DDG_PACE = 1.0s` before each call) and retries with backoff (`DDG_RETRIES = 2`, `DDG_BACKOFF = 5s`).
-  Best practice is ≥0.75s between calls; the 1s pace also gives the website→LinkedIn gap. If searches time
-  out a lot, raise `DDG_PACE`; if it's too slow and not timing out, lower it.
-- **My-Pipeline order:** `directors.enrich_lead_directors` writes back the existing `updated_at` so
-  enriching a lead doesn't bump it to the top of the AE's list.
-- **Session:** cookie-backed, signed token, 10-min sliding idle timeout, session cookie. Brief
-  login-screen flash on refresh is a known cookie-component quirk.
-- **Passwords:** bcrypt; legacy plaintext auto-upgrades on login. Add users via SQL (lowercase username).
-- **"NAB" → "Won"** in the CRM dropdown; underlying column is still `is_nabd`.
-- **iXBRL values** honour `scale` (positive only) and `sign`; a float can never reach the int/bigint
-  columns (safety net). Cash matching covers `CashBankOnHand`/`CashBankInHand` (the "cashbank" family).
+Self-contained `ch_*` subsystem (new-incorps watcher, own tables/scoring/tests). See `ch_*` file
+docstrings; operation: `ch_stream.py companies` (needs CH_STREAM_KEY) or `ch_backfill.py`, then
+`ch_run_local.py`. The engine itself is unaffected by the Streamlit retirement (it's pure
+Python + its own tables), but its **only UI was the Streamlit page**, so its "Send to swipe
+pipeline" hand-off into `sales_leads` currently has no button — see §10.2.
+CH_STREAM_KEY is now a **separate** Companies House application/key from the REST `CH_API_KEY`
+(split 2026-07-16 so one leak can't burn both).
 
-## 8. Local tools
+## 12. Command crib sheet
 
-```
-python enrich_local.py [N|all]   # run the staged pipeline locally (CH + accounts + web + score)
-python rescore_leads.py          # re-score existing leads from stored figures (fast, no internet)
-python rerun_pipeline.py         # reset every non-swiped lead and re-run the FULL pipeline (slow)
-python test_accounts.py <CRN>    # dump a company's accounts iXBRL tags (parser diagnostic)
-```
-
-All write to the same Cloud SQL DB. Don't run a job locally and on the cloud at once (double-processing).
-**After any scoring change, run `rescore_leads.py`** (or `rerun_pipeline.py` for a full re-fetch) so
-existing leads pick up the new score.
-
-## 9. Current state / where we left off
-
-**The scoring model was the last thing being tuned and has an UNCOMMITTED change awaiting your sign-off.**
-
-Uncommitted in the working tree (the user has accepted the scoring model — these just need committing):
-- **`scoring.py`** — the new **noisy-OR "minimum = pass, then diminishing" model** (section 6). Tested
-  against all the anchors (table above) and confirmed to behave.
-- **`settings.py`** — qualification band changed from **30–70 to 30–50** (a 70 was unreachable).
-- **`enrichment.py`** — the **DDG pacing/retry fix** (`_ddg_text`).
-- **`rerun_pipeline.py`** — new (untracked) full-re-run utility.
-- **`HANDOVER.md`** — this file.
-
-**Settings already applied to the live DB** (these are values, not code, so they're live now):
-- Qualification **bar = 35** (slider 25% under the new 30–50 band). Chosen so **BEST OF HUNGARY** (37)
-  qualifies — the user considers it a decent company.
-
-**One open tuning question (your call, low priority):**
-- The "30 staff + £500k cash + £200k FX" lead lands at **84**; the user had said ~80 — close; can be
-  nudged down by softening how much an *above-minimum* FX/cash adds, if wanted nearer 80.
-
-**Next steps after you sign off on the scoring:**
-1. Commit the three uncommitted files (scoring + DDG fix + rerun_pipeline).
-2. Run **`python rescore_leads.py`** (quick) or **`python rerun_pipeline.py`** (full re-fetch) so the
-   existing lead pool gets the new scores. Then re-allocate.
-
-**Recent commits (this redesign), newest last:**
-`ed4cb0d` iXBRL cash fix → `708c892`/`900ebb2` indexes/speed → `fb00271` Slice 1: fit score + ML seam →
-`e1cae31` qualification-bar slider → `f5b76bf` Slice 2: staged pipeline → `0724ec1` Slice 3: training
-logbook + 5% holdout → `5ee366b` rescore_leads → `5a5c655` Slice 4: wire lead_score into allocation +
-unify on the pipeline → `77fc1ee` keep My-Pipeline position → `b24bdb1` scoring rework (additive — now
-**superseded** by the uncommitted noisy-OR model).
-
-## 10. Open items / known caveats
-
-- **SIC lookup is ~50 common codes** (full CH list ~730). Drop the gov.uk SIC CSV in for a bulk loader.
-- **Financial parsing is heuristic** (iXBRL tags + PDF/OCR fallback). Per-field tuning may still be
-  needed; `test_accounts.py` dumps the tags for a given CRN to debug.
-- **Admin "Latest Leads" preview is capped** (`LIMIT 100`) — a display cap, not a data limit.
-- **Most changes were compile-/logic-checked in the dev env** (no live DB/network) — smoke-test on deploy.
-- **Second enrichment / Stage B OCR is local-only** (needs the `poppler` + `tesseract` binaries).
-
-## 11. CH Lead Engine — the "High Quality New Incorps" page
-
-A second, self-contained subsystem (all files/tables prefixed `ch_`) that watches Companies House
-for **newly incorporated** companies with high expected banking usage (FX, cross-border flows, real
-paid-up capital), scores them 0-ish to ~155, and tiers them: **Tier 1 ≥ 60** (high-touch outbound),
-**Tier 2 30–59** (sequence), **Tier 3 < 30** (stored, hidden). It optimises *expected transaction
-volume × chance of displacing the incumbent bank* — so a foreign-parented NewCo beats a hundred £1
-companies, and holding-co/property-SPV vehicles are down-scored. Surfaced on the
-**High Quality New Incorps** page (all users; admin gets pipeline controls) and as md/CSV digests.
-
-| File | Responsibility |
-|---|---|
-| `ch_client.py` | REST client: auth, **shared 550-per-5-min rate limiter**, retries. Smoke test: `python ch_client.py 00000006` |
-| `ch_signals.py` | **Pure** signal detection: capital parsing (incl. `associated_filings` fallback), address normalisation + seed formation-agent list, SIC/PSC/officer rules, SPV-farm + quality-director patterns |
-| `ch_scoring.py` | **Pure** scoring: the one `WEIGHTS` dict, tiers, event bonus, `top_signals` |
-| `ch_enrich.py` | Drain `ch_queue`: fetch profile/PSC/officers/filings, PSC-lag recheck (young co, empty PSC → retry in 48h), serial-director lookups (capped), persist + score. **`sweep_events` = the REST SH01/MR01 detector** (2 calls/company, de-duped by `ref`) that promotes to Tier 1 — this is the only event path |
-| `ch_stream.py` | **`python ch_stream.py companies`** — the ONE long-running listener (real-time new incorps → queue; timepoint resume via `ch_stream_state`; **needs CH_STREAM_KEY**). Trigger events come from REST (`sweep_events`), not a filings stream |
-| `ch_backfill.py` | `python ch_backfill.py [days] [cap]` — REST ingest via advanced search, **no stream key needed**. The fallback/alternative to the companies stream |
-| `ch_run_local.py` | `python ch_run_local.py [N\|all]` — cron entrypoint: drains the queue **then runs the REST event sweep** (mirrors enrich_local.py) |
-| `ch_digest.py` | `python ch_digest.py [hours\|all]` — Tier 1/2 digest → `digests/*.md/.csv`; also feeds the page's download buttons |
-| `ch_hot_addresses.py` | Monthly: CH bulk snapshot CSV → `ch_hot_addresses` (any address on ≥100 live companies = formation agent, −25) |
-| `new_incorps_page.py` | The page: tier/SIC/name/event filters, breakdown drilldown, **Send to swipe pipeline** (inserts into sales_leads as `sourced`), **Suppress** (GDPR list), admin backfill/enrich/digest controls |
-| `tests/` | 37 pytest tests + recorded CH fixtures for signals/scoring/capital (`python -m pytest tests`; needs `pip install pytest`) |
-
-Tables (`models.py`, auto-created by `create_all` — no `_ADDED_COLUMNS` needed since they're new):
-`ch_companies`, `ch_psc`, `ch_officers`, `ch_capital_statements`, `ch_events`, `ch_scores`
-(breakdown JSONB = the audit trail for future weight tuning), `ch_queue`, `ch_stream_state`,
-`ch_hot_addresses`, `ch_suppression`.
-
-**Operation (decided 2026-07-06 — stream only for new incorps, REST for events):** the ONLY
-streaming process is `python ch_stream.py companies` (real-time new incorporations; run it on an
-always-on machine, not Streamlit Cloud). Everything else is REST: `python ch_run_local.py all`
-drains the queue and then sweeps for SH01/MR01 trigger events — no /filings stream. Without a
-stream key at all, swap the companies stream for `python ch_backfill.py` on a schedule (same
-companies, up to a day later). Missing data is always
-neutral: no capital figure / no SIC / no PSC yet contributes 0 points, never negative; young
-companies with empty PSC lists are automatically rescored ~48h later.
-
-This subsystem deliberately does NOT touch `sales_leads` except via the page's explicit
-"Send to swipe pipeline" button, and it shares the CH_API_KEY (the rate limiter keeps it inside
-budget). It produces lists only — no outreach.
-
-## 12. Useful SQL
-
-```sql
--- See the screening outcomes of the last pipeline run:
-SELECT qualified, is_holdout, count(*) FROM screening_log GROUP BY 1,2;
-
--- Why were leads screened out?
-SELECT screen_reason, count(*) FROM sales_leads WHERE status='screened_out' GROUP BY 1 ORDER BY 2 DESC;
-
--- Manually set the qualification bar (or just use the admin slider): 50% -> bar 50
-INSERT INTO app_settings (key, value) VALUES ('qualify_percent','50')
-  ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
-
--- Re-run second enrichment on already-processed leads (then run the pipeline):
-UPDATE sales_leads SET second_enriched = NULL WHERE second_enriched = TRUE;
-
--- Add a user (lowercase username; plaintext self-hashes on first login):
-INSERT INTO users (username, password, role) VALUES ('jane', 'TempPass123', 'ae');
+```bash
+# API dev (repo root):
+.venv-api\Scripts\python -m uvicorn api.main:app --reload --port 8000
+# Frontend dev:
+cd frontend && npm run dev            # build check: npm run build
+# Pipeline (local, needs secrets):
+python enrich_local.py [N|all]        # enrich sourced leads
+python rerun_pipeline.py              # re-enrich ready_for_swipe leads only
+python rescore_leads.py               # re-score from stored figures (fast)
+python sic_data.py                    # reload sic_lookup from data/uk_sic_codes.csv
+                                      # (also runs automatically on API startup)
+# ML:
+python train_model.py                 # train + evaluate vs rules, saves lead_model.pkl
+python experiment_sic.py              # SIC feature experiment
 ```

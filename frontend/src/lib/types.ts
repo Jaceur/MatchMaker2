@@ -15,6 +15,7 @@ export interface Lead {
   company_name: string;
   incorporation_date?: string | null;
   sic_codes?: string | null;
+  sic_detail?: SicDetail[] | null;
   status?: string | null;
   website_url?: string | null;
   linkedin_url?: string | null;
@@ -48,6 +49,14 @@ export interface SourceCandidate {
   url: string;
   title: string;
   score: number;
+}
+
+// One of a lead's SIC codes, resolved server-side against sic_lookup.
+// `description`/`section` are null for a code the table doesn't know.
+export interface SicDetail {
+  code: string;
+  description: string | null;
+  section: string | null;
 }
 
 export interface ClassifiedLead {
@@ -143,6 +152,7 @@ export interface PipelineJob {
 export interface Analytics {
   totals: { decided: number; approved: number; approval_rate: number };
   sic: { sic: string; label: string; total: number; approved: number; rate: number }[];
+  sic_groups: { group: string; total: number; approved: number; rate: number }[];
   feature_correlations: { feature: string; corr: number; n: number }[];
   crm_breakdown: {
     crm_status: string;

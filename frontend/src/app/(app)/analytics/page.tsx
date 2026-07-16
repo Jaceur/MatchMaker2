@@ -85,7 +85,33 @@ export default function AnalyticsPage() {
         </p>
       </header>
 
-      {/* 1. SIC */}
+      {/* 1. SIC groups */}
+      <Section
+        title="Approval by industry group"
+        subtitle="Approval rate per business grouping of the lead's primary SIC code, busiest first. Coarser than the per-code view below — each group pools many codes, so the counts are big enough to trust."
+      >
+        {data.sic_groups.length === 0 ? (
+          <Empty msg="No decided leads with SIC codes yet." />
+        ) : (
+          <ResponsiveContainer width="100%" height={Math.max(260, data.sic_groups.length * 24)}>
+            <BarChart data={data.sic_groups} layout="vertical" margin={{ left: 8, right: 24 }}>
+              <CartesianGrid horizontal={false} stroke="var(--border)" />
+              <XAxis type="number" domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={AXIS} />
+              <YAxis type="category" dataKey="group" width={170} tick={{ ...AXIS, fontSize: 10 }} />
+              <Tooltip
+                contentStyle={tooltipStyle}
+                formatter={(value, _name, item) => [
+                  `${value}% (${item.payload.approved}/${item.payload.total})`,
+                  "approval",
+                ]}
+              />
+              <Bar dataKey="rate" fill="var(--brand)" radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+      </Section>
+
+      {/* 2. SIC codes */}
       <Section
         title="Approval by SIC code (top 20)"
         subtitle="Approval rate per primary SIC code, busiest first. Hover for the description and counts."
@@ -115,7 +141,7 @@ export default function AnalyticsPage() {
         )}
       </Section>
 
-      {/* 2. Feature correlations */}
+      {/* 3. Feature correlations */}
       <Section
         title="What correlates with approval"
         subtitle="Point-biserial correlation between each factor and approval. Right (green) = higher value gets approved more; left (red) = the opposite."
@@ -142,7 +168,7 @@ export default function AnalyticsPage() {
         )}
       </Section>
 
-      {/* 3. CRM status factors */}
+      {/* 4. CRM status factors */}
       <Section
         title="Net New vs Existing Lead vs Existing Account"
         subtitle="Average profile per CRM outcome — how the classified buckets differ."
@@ -159,7 +185,7 @@ export default function AnalyticsPage() {
         )}
       </Section>
 
-      {/* 4. Score calibration */}
+      {/* 5. Score calibration */}
       <Section
         title="Does the score predict approvals?"
         subtitle="Approval rate per lead-score band. Climbing left-to-right = the score works; flat or bumpy = it doesn't."
@@ -185,7 +211,7 @@ export default function AnalyticsPage() {
         )}
       </Section>
 
-      {/* 5. Score-band factor breakdown */}
+      {/* 6. Score-band factor breakdown */}
       <Section
         title="What's inside each score band"
         subtitle="Average features + approval rate per band — for digging into anomalies (e.g. why a lower band can out-approve a higher one). Small bands are noisy: watch the lead count."
@@ -228,7 +254,7 @@ export default function AnalyticsPage() {
         )}
       </Section>
 
-      {/* 6. Coverage */}
+      {/* 7. Coverage */}
       <Section
         title="Enrichment coverage"
         subtitle="Share of enriched leads that have each field populated. Sparse fields are the model's blind spots."

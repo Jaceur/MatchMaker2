@@ -225,12 +225,19 @@ ae_stats = Table(
 # ==========================================
 # SIC CODE REFERENCE
 # ==========================================
-# Companies House nature-of-business codes -> human description. Seeded from
-# sic_data.py; the swipe card translates a lead's sic_codes against this.
+# Companies House nature-of-business codes -> human description + the business
+# grouping we sort them into. Loaded from data/uk_sic_codes.csv by sic_data.py;
+# the lead cards translate a lead's sic_codes against this, and the analytics
+# board rolls approvals up by `section`.
+#
+# `section` is OUR grouping (e.g. "Software/Data", "Used Car Sales"), not the
+# official SIC section letter — it's tuned to how the business thinks about
+# industries, so several groups can share an official division and vice versa.
 sic_lookup = Table(
     'sic_lookup', metadata,
     Column('code', String(10), primary_key=True),
     Column('description', String(255)),
+    Column('section', String(100), index=True),
 )
 
 # ==========================================
@@ -547,6 +554,16 @@ try:
             ))
 except Exception as _e:
     print(f"ml_pipeline_analytics migration skipped: {_e}")
+
+# sic_lookup gained `section` (our business grouping) when the seed dict was
+# replaced by the full 728-code CSV — add it idempotently to already-live tables.
+try:
+    with engine.begin() as _conn:
+        _conn.execute(text(
+            "ALTER TABLE sic_lookup ADD COLUMN IF NOT EXISTS section VARCHAR(100)"
+        ))
+except Exception as _e:
+    print(f"sic_lookup migration skipped: {_e}")
 
 # Indexes for the columns the latency-sensitive queries filter and sort by: the
 # swipe queue (get_pending_leads) and lead allocation (top_up_allocation) both

@@ -3,6 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 
 from leads import get_pending_leads
 from directors import enrich_lead_directors
+from sic_data import with_sic_detail
 
 from ..schemas import PassRequest, ApproveRequest
 from ..security import get_current_user, CurrentUser
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 @router.get("/pending")
 def pending(user: CurrentUser = Depends(get_current_user)) -> list[dict]:
     """This AE's assigned, qualified leads awaiting a swipe (best fit first)."""
-    return get_pending_leads(user.username)
+    return with_sic_detail(get_pending_leads(user.username))
 
 
 @router.post("/{lead_id}/pass", status_code=204)
