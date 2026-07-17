@@ -19,25 +19,8 @@ import functools
 
 import env_loader  # noqa: F401  — imported for its side effect: loads .env into os.environ
 
-# Streamlit is optional and now only used for CACHING (see _cache_resource): the
-# Streamlit app is retired, but the Railway worker still has streamlit installed
-# because it builds from the root requirements.txt. Secrets no longer come from
-# st.secrets — see env_loader.py.
-try:
-    import streamlit as st
-except ImportError:
-    st = None
-
 from sqlalchemy import create_engine, MetaData
 from sqlalchemy.engine import URL
-
-
-def _cache_resource(func):
-    """Use Streamlit's cache_resource when running inside Streamlit (so the whole
-    app shares one engine across reruns); otherwise a plain lru_cache singleton."""
-    if st is not None:
-        return st.cache_resource(show_spinner=False)(func)
-    return functools.lru_cache(maxsize=1)(func)
 
 
 def _conn_params():
@@ -57,11 +40,9 @@ def _conn_params():
     return host, int(port), user, dbname, str(password)
 
 
-# Streamlit caches this so the whole app shares ONE engine / connection pool,
-# even though `engine` is imported across many pages. show_spinner=False keeps
-# it quiet when imported OUTSIDE Streamlit (the ch_worker.py headless worker),
-# where drawing a spinner has no session and would otherwise log errors.
-@_cache_resource
+# Cached so the whole process shares ONE engine / connection pool, even though
+# `engine` is imported across many modules.
+@functools.lru_cache(maxsize=1)
 def get_backend_engine():
     # Structured fields (not a single URL string) so a password containing
     # symbols like @ : / ? # " can't corrupt the connection string — URL.create

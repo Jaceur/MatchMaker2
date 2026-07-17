@@ -8,11 +8,10 @@ approved leads into CRM statuses. Points/leaderboard + admin control centre + an
 > **Read this first.** The stack is **Next.js on Vercel + FastAPI on Railway**, off branch
 > `react-rebuild` (the GitHub **default** branch). All work happens here.
 >
-> **The legacy Streamlit app is RETIRED — no longer deployed anywhere (as of 2026-07-16).**
-> Its files are still in the tree (`app.py`, `*_page.py`, `lead_card.py`, `admin_panel.py`,
-> `ae_*.py`, `auth.py`, `analytics_dashboard.py`) and the root `requirements.txt` still carries
-> Streamlit because **the Railway worker builds from it** — so don't rip Streamlit out of the root
-> requirements without re-testing the worker. See §10 for the cutover cleanup this now unblocks.
+> **Streamlit is GONE (2026-07-17): app retired 07-16, then all page files deleted, every
+> `st.*` code path removed, and streamlit dropped from the root `requirements.txt`.** The whole
+> import chain is verified to work with streamlit uninstalled. That also ended the Starlette
+> 1.x/0.41 conflict — **one venv can now run the API, the worker, and every script** (§1).
 >
 > **The immediate next task is SIC-code screening — see §9 before anything else.**
 
@@ -29,23 +28,25 @@ approved leads into CRM statuses. Points/leaderboard + admin control centre + an
 | **DB** | Supabase Postgres, Session pooler + `pg8000` | Connection in `database.py`; credentials from the environment via `env_loader.py` (root `.env` locally, Railway Variables headless). |
 | **CHStream** | separate repo `Jaceur/CHStream`, own Railway service | Not part of this repo anymore. |
 
-**Local dev:** API needs its own venv (`.venv-api`) because **the Streamlit in the root
-`requirements.txt` needs Starlette 1.x and FastAPI needs 0.41.x — they cannot share an
-environment**. (Still true even though the Streamlit *app* is retired: the root requirements
-are what the Railway worker builds from, so Streamlit is still installed there.) `pip install -r api/requirements.txt` into `.venv-api`, then from the repo root: `.venv-api\Scripts\python -m uvicorn api.main:app --reload --port 8000`. Frontend: `cd frontend && npm run dev`.
+**Local dev:** the historical two-venv split is **no longer required** — removing Streamlit
+(2026-07-17) removed the Starlette 1.x/0.41 conflict that forced it. One venv with the root
+`requirements.txt` + `api/requirements.txt` installed runs everything. The `.venv-api` /
+`.venv-ml` venvs still exist locally and still work (nothing forces a rebuild); API from the repo
+root: `.venv-api\Scripts\python -m uvicorn api.main:app --reload --port 8000` (or any venv with
+fastapi installed). Frontend: `cd frontend && npm run dev`. The api/requirements pin set is still
+what the Docker image installs — keep it lean, it's why the API image doesn't ship pandas' friends
+like ddgs/tesseract.
 
 **Secrets: ONE gitignored `.env` at the project root** (copy `.env.example`), loaded by `env_loader.py` and shared by the API, the worker and every local script. Consolidated 2026-07-16 — it used to be split (`api/.env` for the API, `.streamlit/secrets.toml` via `st.secrets` for everything else), which meant a rotated DB password had to be pasted twice; it wasn't, so every local script broke while the deployed app kept working. **`.env` is not TOML — paste values raw, no quotes** (the live DB password contains a `"`, which is what silently broke the old TOML file). Full walkthroughs in `api/README.md` and `DEPLOY.md`.
 
 ## 2. Architecture (file map)
 
 Shared Python modules at repo root (imported by the API **and** the worker — `database`, `models`,
-`settings`, `scoring`, `pipeline`, `enrichment`, `second_enrichment`, `leads`, `directors`,
-`sourcing`, `leaderboard`, `sic_data`, `env_loader` + the `ch_*` engine).
-`database.py` / `leaderboard.py` / `sic_data.py` still import Streamlit *optionally*
-(try/except → `st = None`) so the API venv works without it — but **only for caching now**
-(`st.cache_*` → `lru_cache` fallback). Secrets no longer touch Streamlit at all: `env_loader.py`
-is the single source, imported by `database.py` (DB) and `ch_client.py` (CH keys), which between
-them cover every entry point.
+`settings`, `scoring`, `sic_weights`, `pipeline`, `enrichment`, `second_enrichment`, `leads`,
+`directors`, `sourcing`, `leaderboard`, `sic_data`, `ml_data`, `env_loader` + the `ch_*` engine).
+No module imports Streamlit anymore — caching is plain `functools.lru_cache`, secrets are
+`env_loader.py` (imported by `database.py` for the DB and `ch_client.py` for the CH keys, which
+between them cover every entry point).
 
 | New file | Responsibility |
 |---|---|
@@ -59,6 +60,8 @@ them cover every entry point.
 | `frontend/src/app/(app)/` | `swipe` (deck + animations), `pipeline`, `dashboard`, `leaderboard`, `admin`, `analytics`, `new-incorps` (**stub**) |
 | `data/uk_sic_codes.csv` | **The SIC reference data** (728 codes → description + our business grouping). Source of truth for `sic_lookup`; edit it and redeploy to change the table |
 | `env_loader.py` | Loads the root `.env` into `os.environ`. The ONE place secrets come from |
+| `ml_data.py` | **The labelled-lead dataset query** (screening_log ⋈ ml_pipeline_analytics). Every training-data consumer (trainer, SIC weights, future models) reads through it — it owns the durable-log-not-live-pool rule |
+| `sic_weights.py` | SIC industry multiplier on lead_score (§5) |
 | `train_model.py` | Offline ML trainer (§8) |
 | `experiment_sic.py` | SIC target-encoding experiment (§8/§9) |
 | `backfill_screening_features.py` | One-time backfill of new screening_log columns (already run) |
@@ -133,6 +136,13 @@ Staged pipeline (`pipeline.py`): Stage A cheap CH+HMRC → best-case gate; Stage
 bar = admin slider (30–50 band, `settings.py`).
 `rerun_pipeline.py` now resets **only `ready_for_swipe`** leads (not screened-out).
 Admin "Gather & enrich" queues into `pipeline_jobs` for the Railway worker.
+
+**Tunables without a redeploy** (added 2026-07-17): the knobs ship as code defaults but read
+`app_settings` overrides via `settings.get_int_setting`/`get_float_setting` — insert a row to
+override, delete it to fall back. Keys: `holdout_rate` (default 0.05), `pending_target` (20),
+`sic_shrink_k` (25), `sic_min_group_n` (15), `sic_mult_min`/`sic_mult_max` (0.5/1.5),
+`sic_min_total` (100). No admin UI yet — a psql one-liner does it:
+`INSERT INTO app_settings(key,value) VALUES ('holdout_rate','0.03') ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;`
 Actual funnel (17.6k leads): **12% binned at Stage A** (dormant, avg score 0), **71% at Stage B**,
 **18% qualify**. So Stage A is in practice a dormancy filter and Stage B is the real gate.
 
@@ -249,6 +259,17 @@ clear pipeline w/ confirm).
   worth switching**; SIC is already in the model. But the SIC *signal itself* is real (§9).
 - Tabular features are tapped out at this data size; the levers are (a) more swipes,
   (b) a web-judgment LLM agent (reads website/LinkedIn — a genuinely new signal).
+- **Training-data capture widened 2026-07-17** (all flowing automatically from the next deploy):
+  - `ml_pipeline_analytics` now snapshots **decision context at the swipe**: `lead_score` (the
+    score the queue ranked by — screening_log's copy goes stale after a rescore), `sic_multiplier`,
+    `is_holdout` (select an unbiased eval slice with no join), and `hours_in_queue`
+    (assigned → decided; a stale-pile/reluctance signal). Written by `leads.build_ml_row`.
+  - **Approve-side dwell time**: the pass path always logged `dwell_time_seconds`; approves wrote
+    NULL — the more interesting half of the decision-latency signal was missing. The swipe card now
+    sends it on approve too; it parks on `sales_leads.approve_dwell_seconds` until classify writes
+    the ML row.
+  - All label consumers read through **`ml_data.load_labelled_leads()`** — one owner for the
+    join and for the durable-log-not-live-pool rule (§6).
 - **Python 3.14 sklearn gotchas** (cost 3 debugging rounds): always pass a **shuffled
   StratifiedKFold object** to CalibratedClassifierCV/cross-val (default unshuffled int-cv folds
   can make a sparse feature all-empty → `sliding_window_view` crash); `cv="prefit"` no longer
@@ -295,26 +316,14 @@ Still open / deliberately not done:
    Commit+push deploys frontend (Vercel) + API (Railway) automatically — and the API deploy is what
    loads `sic_lookup` (§3).
 2. **New Incorps page** — still a stub in the React app. The `ch_*` engine works, but its only UI
-   was the Streamlit page, which is now retired — so this is the one feature that **lost its
-   front-end at cutover**. Port `new_incorps_page.py` to React to get it back.
+   (the Streamlit page) is retired and now **deleted** — recover `new_incorps_page.py` from git
+   history as the reference when porting it to React. The one feature with no front-end.
 3. Old `ready_for_swipe` leads only get candidate dropdowns after `python rerun_pipeline.py` (local).
 4. `score_lead` model loader behind a flag (§8).
-5. **Streamlit cutover cleanup** (retired 2026-07-16) — partially done:
-   - ~~Secrets off `st.secrets` onto one root `.env`; delete `.streamlit/`~~ **DONE 2026-07-16**
-     (`env_loader.py`, §1).
-   - Drop the dead `is_nabd` / `contact_email` columns (§3).
-   - Delete the page files: `app.py`, `swipe_page.py`, `new_incorps_page.py` (port it first, see 2),
-     `lead_card.py`, `admin_panel.py`, `ae_dashboard.py`, `ae_home.py`, `analytics_dashboard.py`,
-     `auth.py`, `lead_score_distribution.py`. **`auth.py` is already broken** — it reads
-     `st.secrets["DB_PASSWORD"]`, and the secrets file is gone. Harmless (only `app.py` /
-     `ae_home.py` import it, both Streamlit-only), but it means these files are now dead *and*
-     non-functional, not just unused.
-   - Single requirements set: only once the above are gone AND the **worker** is re-tested — it
-     builds from the root `requirements.txt`, so dropping Streamlit there is what lets `.venv-api`
-     and the venv split (§1) finally collapse into one environment. Keep `python-dotenv` — the
-     worker now needs it (`database.py` → `env_loader`).
-   - Then the remaining Streamlit shims (`database.py`, `leaderboard.py`, `sic_data.py` try/except
-     `import streamlit`, now **caching-only**) can become plain `lru_cache`.
+5. **Streamlit cutover cleanup — DONE 2026-07-17** (secrets → `.env` 07-16; page files, `st.*`
+   paths, devcontainer, `matchmaker2.zip` and the streamlit pins all removed 07-17; worker import
+   chain verified with streamlit blocked). One remainder: **drop the dead `is_nabd` /
+   `contact_email` columns** (§3) — a DB change, deliberately left for an explicit decision.
 6. Vercel preview deployments are login-gated (Deployment Protection) — AEs use the production URL.
 7. **Analytics on the durable logs instead of the live pool — now the top item.** It isn't a
    nice-to-have: the board's approval rates are actively *inflated* by `clear_database()` deleting

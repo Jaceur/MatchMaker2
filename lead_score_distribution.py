@@ -10,17 +10,14 @@ line marks the cutoff itself.
 It saves a PNG (`lead_score_distribution.png`) next to this file and also opens a
 window if your machine can show one.
 
-NOTE: needs matplotlib, which is a LOCAL-only tool here (kept out of
-requirements.txt so the Streamlit Cloud deploy stays lean):
+NOTE: needs matplotlib, a LOCAL-only dependency (kept out of
+requirements.txt so the deployed services stay lean):
 
     python -m pip install matplotlib
 
 The graph reflects the scores CURRENTLY stored in the database. If you've just
 changed the scoring, run `python rescore_leads.py` first so the figures are fresh.
 """
-import logging
-logging.getLogger("streamlit").setLevel(logging.ERROR)
-
 import warnings
 from statistics import mean, median
 

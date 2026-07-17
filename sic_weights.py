@@ -34,7 +34,7 @@ get swiped the weights sharpen on their own. That self-correction depends on the
 
 WHY THE DURABLE LOG, NOT sales_leads
 ------------------------------------
-Rates come from screening_log ⋈ ml_pipeline_analytics, NOT the live pool.
+Rates come from ml_data.load_labelled_leads() (screening_log ⋈ ml_pipeline_analytics), NOT the live pool.
 `leads.clear_database()` deletes every lead that isn't 'approved' — i.e. it wipes
 PASSES and keeps APPROVALS — so the live pool's approval rate climbs every time
 someone clears it (51% there vs 34% here). Scoring off that would bake in the
@@ -42,14 +42,15 @@ bias and silently shift the algorithm whenever an admin pressed a button.
 """
 import functools
 
-import pandas as pd
-from sqlalchemy import text
 
-from database import engine
+# The defaults below are code constants; each can be overridden at runtime via
+# app_settings (settings.get_*_setting) under the key named alongside it, so the
+# shape of the weighting is tunable without a redeploy. compute_sic_multipliers
+# re-reads them on every call — i.e. once per pipeline run.
 
 # Sample size at which a group's own rate is believed as much as the baseline.
 # 25 keeps small groups near-neutral while letting a genuinely strong n=21 signal
-# (Software/Data) through at w=0.46.
+# (Software/Data) through at w=0.46.               app_settings: sic_shrink_k
 SHRINK_K = 25
 
 # Below this many decided leads, a group gets NO adjustment at all — flat 1.0.
@@ -58,42 +59,43 @@ SHRINK_K = 25
 # baseline came out as a 1.27x boost. The binomial interval is the honest test —
 # at n=10 a 10% rate spans roughly 0%-45%, which straddles the baseline (no
 # signal), while by n=15 it spans ~1%-30% and genuinely clears it. So 15 is where
-# "we have no idea" ends.
+# "we have no idea" ends.                          app_settings: sic_min_group_n
 MIN_GROUP_N = 15
 
 # How far the multiplier may travel. Caps a runaway group (and stops an
 # unlucky/small group being zeroed out entirely) — the "not completely" rule:
 # a strong lead in a weak industry can still clear the bar on its other signals.
+#                            app_settings: sic_mult_min / sic_mult_max
 MULT_MIN, MULT_MAX = 0.5, 1.5
 
 # Below this many decided leads overall, don't weight anything: the baseline
-# itself would be too noisy to shrink toward.
+# itself would be too noisy to shrink toward.      app_settings: sic_min_total
 MIN_TOTAL = 100
 
-_RATES_SQL = text("""
-    SELECT s.sic_codes, v.approved
-    FROM (
-        SELECT DISTINCT ON (lead_id) lead_id, sic_codes
-        FROM screening_log
-        WHERE lead_id IS NOT NULL
-        ORDER BY lead_id, created_at DESC
-    ) s
-    JOIN (
-        SELECT lead_id, BOOL_OR(is_worth_it) AS approved
-        FROM ml_pipeline_analytics
-        WHERE lead_id IS NOT NULL AND is_worth_it IS NOT NULL
-        GROUP BY lead_id
-    ) v ON v.lead_id = s.lead_id
-""")
+
+def _runtime_params():
+    """The weighting shape, with any app_settings overrides applied."""
+    from settings import get_float_setting, get_int_setting
+    return {
+        "k": get_int_setting("sic_shrink_k", SHRINK_K),
+        "min_group_n": get_int_setting("sic_min_group_n", MIN_GROUP_N),
+        "mult_min": get_float_setting("sic_mult_min", MULT_MIN),
+        "mult_max": get_float_setting("sic_mult_max", MULT_MAX),
+        "min_total": get_int_setting("sic_min_total", MIN_TOTAL),
+    }
 
 
-def shrink_multiplier(group_rate, n, baseline, k=SHRINK_K):
-    """The multiplier for one group. Pure — the maths, with no database."""
-    if not baseline or n < MIN_GROUP_N:
+
+def shrink_multiplier(group_rate, n, baseline, k=SHRINK_K,
+                      min_group_n=MIN_GROUP_N, mult_min=MULT_MIN, mult_max=MULT_MAX):
+    """The multiplier for one group. Pure — the maths, with no database. The
+    parameters default to the module constants; compute_sic_multipliers passes
+    the runtime (app_settings-overridable) values instead."""
+    if not baseline or n < min_group_n:
         return 1.0
     w = n / (n + k)
     effective = w * group_rate + (1 - w) * baseline
-    return max(MULT_MIN, min(MULT_MAX, effective / baseline))
+    return max(mult_min, min(mult_max, effective / baseline))
 
 
 def compute_sic_multipliers():
@@ -101,15 +103,16 @@ def compute_sic_multipliers():
 
     Returns (multipliers, info) where info holds baseline/total and the per-group
     rate + n, so callers can log or display WHY a lead was nudged."""
+    from ml_data import load_labelled_leads
     from sic_data import get_sic_records
 
-    with engine.connect() as conn:
-        df = pd.read_sql(_RATES_SQL, conn)
+    params = _runtime_params()
+    df = load_labelled_leads()
 
     records = get_sic_records()
     sections = {code: rec["section"] for code, rec in records.items()}
 
-    info = {"baseline": None, "total": 0, "groups": {}}
+    info = {"baseline": None, "total": 0, "groups": {}, "params": params}
     if df.empty:
         return {}, info
 
@@ -128,13 +131,16 @@ def compute_sic_multipliers():
     baseline = float(df["approved"].mean())
     total = int(len(df))
     info["baseline"], info["total"] = baseline, total
-    if total < MIN_TOTAL:
+    if total < params["min_total"]:
         return {}, info
 
     multipliers = {}
     for group, g in df.groupby("group"):
         rate, n = float(g["approved"].mean()), int(len(g))
-        mult = shrink_multiplier(rate, n, baseline)
+        mult = shrink_multiplier(
+            rate, n, baseline, k=params["k"], min_group_n=params["min_group_n"],
+            mult_min=params["mult_min"], mult_max=params["mult_max"],
+        )
         multipliers[group] = mult
         info["groups"][group] = {"rate": rate, "n": n, "multiplier": mult}
     return multipliers, info

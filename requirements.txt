@@ -1,11 +1,11 @@
-# Pinned to the versions that were resolved on the Streamlit Cloud deploy
-# (Python 3.14). Nothing here was pinned before, so every redeploy silently
-# pulled the latest of each package — meaning the app could break with no code
-# change at all. These are the exact versions from the current build (all have
-# Python 3.14 wheels), so a redeploy is now reproducible. Bump on purpose, one
-# at a time, not by accident.
-streamlit==1.59.1
-extra-streamlit-components==0.1.81   # cookie manager; needs streamlit>=1.40.1
+# Dependency set for the Railway WORKER (Nixpacks builds this) and local
+# scripts. The API has its own slimmer pin set in api/requirements.txt for its
+# Docker image. Everything pinned so a redeploy is reproducible — bump on
+# purpose, one at a time, not by accident.
+#
+# Streamlit was removed 2026-07-17 (app retired; the last st.* code paths are
+# gone). That also ended the Starlette 1.x/0.41 conflict that forced the
+# separate .venv-api — one venv can now run the API, worker, and scripts.
 pg8000==1.31.5
 sqlalchemy==2.0.51
 # Reads the project .env (env_loader.py). REQUIRED by the Railway worker: it

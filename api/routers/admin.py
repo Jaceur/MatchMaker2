@@ -94,9 +94,9 @@ def set_percent(body: QualifyPercentRequest) -> dict:
 @router.post("/allocation/topup")
 def allocation_topup(body: AllocationRequest) -> list[dict]:
     """Top every AE back up to the pending target from the qualified pool. With
-    commit=False it only projects the result."""
-    target = body.target or 20
-    return top_up_allocation(target=target, commit=body.commit)
+    commit=False it only projects the result. No target in the request -> the
+    runtime default resolved inside top_up_allocation (one source of truth)."""
+    return top_up_allocation(target=body.target, commit=body.commit)
 
 
 @router.post("/pipeline-job")

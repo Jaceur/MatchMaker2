@@ -34,6 +34,8 @@ export interface ApprovePayload {
   linkedin_valid: boolean;
   corrected_website_url: string | null;
   corrected_linkedin_url: string | null;
+  // Same clock as the pass path — decision latency is a training signal.
+  dwell_time_seconds: number;
 }
 
 type Mode = "idle" | "passing";
@@ -186,6 +188,7 @@ export function SwipeCard({
       linkedin_valid: liUrl === scrapedLi,
       corrected_website_url: webUrl && webUrl !== scrapedWeb ? webUrl : null,
       corrected_linkedin_url: liUrl && liUrl !== scrapedLi ? liUrl : null,
+      dwell_time_seconds: Math.round((Date.now() - startedAt.current) / 1000),
     });
   }
 

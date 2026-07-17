@@ -45,6 +45,10 @@ class ApproveRequest(BaseModel):
     linkedin_valid: bool = False
     corrected_website_url: Optional[str] = None
     corrected_linkedin_url: Optional[str] = None
+    # Seconds spent on the card before approving. The pass path always logged
+    # this; approves lost it (classify wrote NULL), so half the dwell signal —
+    # and the more interesting half — was missing from the training data.
+    dwell_time_seconds: Optional[int] = None
 
 
 # ---------- My Pipeline / classify ----------

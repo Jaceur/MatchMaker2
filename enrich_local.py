@@ -1,6 +1,5 @@
-"""Enrich leads locally — faster than the deployed app and with no Streamlit
-Cloud time limit. It writes to the same Cloud SQL database, so results appear in
-the web app immediately.
+"""Enrich leads locally — faster than waiting on the deployed worker. It writes
+to the same database, so results appear in the web app immediately.
 
 Usage:
     python enrich_local.py          # enrich up to 100 'sourced' leads
@@ -11,14 +10,10 @@ Needs a project .env locally with the same Supabase connection settings,
 DB_PASSWORD and CH_API_KEY the deployed app uses (already present here), and the
 project's dependencies installed:  pip install -r requirements.txt
 """
-import logging
 import sys
 import time
 
-# Quieten Streamlit's "missing ScriptRunContext" warnings when run outside the app.
-logging.getLogger("streamlit").setLevel(logging.ERROR)
-
-from pipeline import run_pipeline  # noqa: E402  (after logging setup)
+from pipeline import run_pipeline
 
 
 def _progress(done, total, name):

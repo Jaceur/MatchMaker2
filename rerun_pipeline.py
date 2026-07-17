@@ -12,9 +12,6 @@ is local-only). It writes to the same Cloud SQL database as the app, and saves
 each lead as it goes, so it's safe to stop and re-run (it picks up where it left
 off). AE assignments on pending leads are preserved.
 """
-import logging
-logging.getLogger("streamlit").setLevel(logging.ERROR)
-
 import time
 
 from sqlalchemy import update, select, func

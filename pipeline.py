@@ -29,15 +29,20 @@ from enrichment import (
 )
 from second_enrichment import second_enrich_lead
 from scoring import score_lead, best_possible_score, features_from_mapping
-from settings import get_qualify_bar
+from settings import get_float_setting, get_qualify_bar
 from sic_weights import get_sic_multipliers, multiplier_for
 
 # A small random fraction of leads bypass the gates and go to AEs regardless of
 # score (a "holdout"). This is the one thing that keeps the future training data
 # unbiased: without it we'd only ever learn outcomes for leads the filter let
-# through, and could never tell whether it was wrongly binning good ones. Set to
-# 0 to switch it off.
+# through, and could never tell whether it was wrongly binning good ones — and it
+# is what lets the SIC weighting self-correct (sic_weights.py). This is the code
+# default; override at runtime via app_settings key "holdout_rate" (0 disables).
 HOLDOUT_RATE = 0.05
+
+
+def get_holdout_rate():
+    return get_float_setting("holdout_rate", HOLDOUT_RATE)
 
 
 def _screened(fields, reason):
@@ -52,17 +57,19 @@ def _screened(fields, reason):
     return fields
 
 
-def screen_lead(record, bar=None, sic_multipliers=None):
+def screen_lead(record, bar=None, sic_multipliers=None, holdout_rate=None):
     """Run one 'sourced' lead through the staged pipeline. Returns the dict of
     fields to write (including the final status). `bar` defaults to the current
     admin-set qualification bar.
 
-    A random HOLDOUT_RATE fraction of leads are 'holdouts': they skip the
+    A random `holdout_rate` fraction of leads are 'holdouts': they skip the
     elimination gates and go through to the AEs whatever they score, so we get
     labelled outcomes for leads the filter would otherwise have binned."""
     if bar is None:
         bar = get_qualify_bar()
-    is_holdout = random.random() < HOLDOUT_RATE
+    if holdout_rate is None:
+        holdout_rate = get_holdout_rate()
+    is_holdout = random.random() < holdout_rate
     strict, clean = clean_company_name(record.company_name)
     # The lead's industry multiplier, from how its SIC group has actually
     # converted (sic_weights.py). 1.0 = no history / no opinion. Holdouts are
@@ -144,6 +151,7 @@ def run_pipeline(limit=None, progress_callback=None):
     # itself as more leads get swiped.
     get_sic_multipliers.cache_clear()
     sic_multipliers = get_sic_multipliers()
+    holdout_rate = get_holdout_rate()             # ditto — one rate per batch
     print(f"Found {total} leads to screen (qualification bar = {bar}/100)...")
     if sic_multipliers:
         nudged = {g: m for g, m in sic_multipliers.items() if not 0.95 <= m <= 1.05}
@@ -151,7 +159,8 @@ def run_pipeline(limit=None, progress_callback=None):
 
     done = 0
     for record in records:
-        fields = screen_lead(record, bar=bar, sic_multipliers=sic_multipliers)
+        fields = screen_lead(record, bar=bar, sic_multipliers=sic_multipliers,
+                             holdout_rate=holdout_rate)
         log_row = {
             "lead_id": record.id,
             "crn": record.crn,

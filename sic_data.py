@@ -8,9 +8,9 @@ grouping** per code in `Section_Description` — e.g. "Software/Data",
 analytics board rolls approvals up by; it is deliberately NOT the official SIC
 section letter, because the business thinks in finer/different categories.
 
-To change the data: edit the CSV and re-run the loader (`python sic_data.py`, or
-the Streamlit app's boot hook). `load_sic_lookup()` is a full REPLACE — codes
-that vanish from the CSV are deleted from the table.
+To change the data: edit the CSV and redeploy (the API's startup hook runs the
+loader), or run `python sic_data.py` by hand. `load_sic_lookup()` is a full
+REPLACE — codes that vanish from the CSV are deleted from the table.
 
 Two Companies House codes are NOT in the official SIC list but appear on real
 company records, so they're added back in CH_EXTRA_CODES below.
@@ -24,13 +24,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
 from models import sic_lookup
-
-# Streamlit is optional: the web app has it, the FastAPI backend and the
-# headless workers import this module without it (same pattern as database.py).
-try:
-    import streamlit as st
-except ImportError:
-    st = None
 
 CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "uk_sic_codes.csv")
 
@@ -90,30 +83,11 @@ def load_sic_lookup(path=CSV_PATH):
         # A true replace: drop codes the CSV no longer lists (the old hand-seeded
         # descriptions that aren't in the official list).
         conn.execute(delete(sic_lookup).where(sic_lookup.c.code.notin_(list(records))))
-    _clear_sic_cache()
+    get_sic_records.cache_clear()   # a fresh load is visible immediately
     return len(rows)
 
 
-def _clear_sic_cache():
-    """Drop the cached lookup so a fresh load is visible immediately. The two
-    cache decorators name this differently — st.cache_data gives .clear(),
-    lru_cache gives .cache_clear() — and neither has the other's method."""
-    for attr in ("clear", "cache_clear"):
-        clear = getattr(get_sic_records, attr, None)
-        if callable(clear):
-            clear()
-            return
-
-
-def _cache(func):
-    """Streamlit's data cache inside the app (shared across reruns); a plain
-    lru_cache singleton for the API/workers, where st.cache_data isn't available."""
-    if st is not None:
-        return st.cache_data(ttl=3600)(func)
-    return functools.lru_cache(maxsize=1)(func)
-
-
-@_cache
+@functools.lru_cache(maxsize=1)
 def get_sic_records():
     """code -> {"description", "section"}, read from the table and cached.
     Falls back to the CSV on the disk if the table read fails, so a lead card

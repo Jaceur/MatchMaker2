@@ -15,9 +15,8 @@ beyond the app's deps: scikit-learn (>=1.4) and joblib.
 """
 import numpy as np
 import pandas as pd
-from sqlalchemy import text
 
-from database import engine
+from ml_data import load_labelled_leads
 
 # Raw numeric features. lead_score (the rules output) is EXCLUDED on purpose —
 # feeding it back in would just teach the model to copy the rules.
@@ -37,25 +36,9 @@ FEATURES = NUMERIC + RATIOS + BOOLEAN + CATEGORICAL
 
 
 def load_dataset() -> pd.DataFrame:
-    query = text("""
-        WITH latest_features AS (
-            SELECT DISTINCT ON (lead_id) *
-            FROM screening_log
-            WHERE lead_id IS NOT NULL
-            ORDER BY lead_id, created_at DESC
-        ),
-        verdicts AS (
-            SELECT lead_id, BOOL_OR(is_worth_it) AS approved
-            FROM ml_pipeline_analytics
-            WHERE lead_id IS NOT NULL AND is_worth_it IS NOT NULL
-            GROUP BY lead_id
-        )
-        SELECT f.*, v.approved
-        FROM latest_features f
-        JOIN verdicts v ON v.lead_id = f.lead_id
-    """)
-    with engine.connect() as conn:
-        return pd.read_sql(query, conn)
+    """The labelled dataset, via the shared loader (ml_data.py owns the join —
+    and the reasons it must read the durable log, not sales_leads)."""
+    return load_labelled_leads()
 
 
 def _safe_div(num: pd.Series, den: pd.Series) -> pd.Series:

@@ -85,6 +85,9 @@ def approve_lead(lead_id: int, username: str, req) -> str:
                 status="approved",
                 website_accurate=req.website_valid,
                 linkedin_accurate=req.linkedin_valid,
+                # Parked here until classify writes the ML row (no ML row exists
+                # yet at approve time — classify is where the label lands).
+                approve_dwell_seconds=req.dwell_time_seconds,
                 **corrected,
             )
         )
@@ -117,7 +120,8 @@ def classify_lead(lead_id: int, username: str, crm_status: str, email_verdicts) 
                 corrected_website_url=lead.get("corrected_website_url"),
                 corrected_linkedin_url=lead.get("corrected_linkedin_url"),
                 is_worth_it=True, crm_status=crm_status,
-                dwell_time_seconds=None,
+                # The swipe-time dwell, parked on the lead by approve_lead.
+                dwell_time_seconds=lead.get("approve_dwell_seconds"),
             ))
         )
         # "Won" was retired (GDPR): it's now "Existing Account - Already Claimed",

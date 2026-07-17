@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse, urljoin
 
 import requests
-import streamlit as st
 from ddgs import DDGS
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz  # pip install rapidfuzz

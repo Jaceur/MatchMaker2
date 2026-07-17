@@ -11,9 +11,6 @@ Safe + reversible: it only rewrites the derived `lead_score` column; the next
 enrichment of a lead recomputes it anyway. Writes to the same Cloud SQL database
 as the app, so the change shows up immediately.
 """
-import logging
-logging.getLogger("streamlit").setLevel(logging.ERROR)
-
 from collections import Counter
 
 from sqlalchemy import select, update, bindparam

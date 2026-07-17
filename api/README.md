@@ -1,16 +1,17 @@
 # Matchmaker 2.0 — API (FastAPI)
 
-The reactive-frontend backend. A thin HTTP layer over the **existing** business
-logic (`scoring`, `pipeline`, `leads`, `directors`, `settings`, `leaderboard`,
-the `ch_*` engine). It imports those project-root modules directly — no logic is
-duplicated — and shares the same Supabase database as the Streamlit app.
+The backend. A thin HTTP layer over the **existing** business logic (`scoring`,
+`sic_weights`, `pipeline`, `leads`, `directors`, `settings`, `leaderboard`, the
+`ch_*` engine). It imports those project-root modules directly — no logic is
+duplicated — and shares the Supabase database with the Railway worker.
 
-## Why its own virtual environment
+## Environments
 
-This build of Streamlit needs **Starlette 1.x**; FastAPI needs **Starlette
-0.41.x**. They can't live in one environment, so the API runs in its own venv
-**without Streamlit installed**. The shared modules import cleanly without it
-thanks to optional-import guards in `database.py` and `leaderboard.py`.
+One venv can run everything since Streamlit was removed (2026-07-17) — the old
+Starlette 1.x/0.41 conflict that forced a dedicated `.venv-api` is gone. The
+separate `api/requirements.txt` still matters for DEPLOYMENT: it's the lean pin
+set the Docker image installs (no ddgs/pdf/OCR stack), which keeps the API image
+small. Locally, install it into whichever venv you use.
 
 ## Run it locally
 

@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
 from models import sales_leads, pipeline_archive, ae_stats
-from settings import get_qualify_bar
+from settings import get_int_setting, get_qualify_bar
 
 
 # ==========================================
@@ -77,6 +77,19 @@ def build_ml_row(lead, swiped_by, **overrides):
     website/linkedin verdicts, corrected URLs). Keeps the three score columns
     distinct instead of triple-storing one number."""
     age_months, dir_count = engineer_ml_features(lead)
+
+    # Hours the lead sat in the AE's pile before this decision — a stale-pile /
+    # reluctance signal future models can use. None if never formally assigned.
+    hours_in_queue = None
+    assigned = lead.get("assigned_date")
+    if assigned is not None:
+        try:
+            hours_in_queue = round(
+                (datetime.utcnow() - pd.to_datetime(assigned).to_pydatetime()).total_seconds() / 3600, 2
+            )
+        except Exception:
+            pass
+
     row = {
         "lead_id": lead["id"],
         "crn": lead["crn"],
@@ -88,6 +101,13 @@ def build_ml_row(lead, swiped_by, **overrides):
         # Learning-to-rank: snapshot the candidate sets the AE chose from.
         "website_candidates": lead.get("website_candidates"),
         "linkedin_candidates": lead.get("linkedin_candidates"),
+        # Decision context at the swipe: the score the queue ranked this lead by
+        # (rescores can move it after screening), the industry nudge inside it,
+        # and the holdout flag — so an unbiased eval slice needs no join.
+        "lead_score": lead.get("lead_score"),
+        "sic_multiplier": lead.get("sic_multiplier"),
+        "is_holdout": lead.get("is_holdout"),
+        "hours_in_queue": hours_in_queue,
         "swiped_by": swiped_by,
     }
     row.update(overrides)
@@ -130,6 +150,8 @@ def get_pending_leads(ae_username):
 # TEAM TOP-UP ALLOCATION
 # ==========================================
 # Each team member should hold a swipe pile of about this many PENDING leads.
+# Code default; override at runtime via app_settings key "pending_target", or
+# per-run from the admin page's target box.
 PENDING_TARGET = 20
 # Lowest rank weight: the bottom of the leaderboard pulls leads at this fraction
 # of the top's pull. 1.0 means "ignore the leaderboard" (everyone equal); lower
@@ -185,14 +207,18 @@ def _ae_rank_weights():
     return weights
 
 
-def top_up_allocation(target=PENDING_TARGET, commit=True):
+def top_up_allocation(target=None, commit=True):
     """Top every team member back up to `target` PENDING leads from the unassigned
     qualified pool. Each person needs (target - their current pending); leads are
     drafted best-score-first, weighted by leaderboard standing so higher-ranked
     reps get higher-scoring leads on average, while everyone is still filled to
     target as far as the pool stretches. With commit=False it only projects the
     result (no writes). Returns a per-person summary (AE, Assigned, Avg Score,
-    Now Pending), best-ranked first."""
+    Now Pending), best-ranked first.
+
+    `target=None` -> the runtime setting ("pending_target"), else PENDING_TARGET."""
+    if target is None:
+        target = get_int_setting("pending_target", PENDING_TARGET)
     bar = get_qualify_bar()
     weights = _ae_rank_weights()
     now = datetime.utcnow()

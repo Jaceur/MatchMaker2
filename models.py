@@ -49,6 +49,9 @@ sales_leads = Table(
     # group has actually converted, damped by sample size (sic_weights.py).
     # 1.0 = no adjustment. Stored so a score is auditable after the fact.
     Column('sic_multiplier', Float),
+    # Seconds the AE spent on the card before approving; copied into the ML row
+    # at classify (the pass path logs dwell directly).
+    Column('approve_dwell_seconds', Integer),
     Column('employee_count', Integer),                # parsed from the filed accounts (second enrichment)
     # Financials parsed from the accounts (second enrichment). BigInteger as
     # turnover etc. can exceed the 32-bit INT range; foreign_exchange is signed.
@@ -116,6 +119,14 @@ ml_pipeline_analytics = Table(
     Column('is_worth_it', Boolean),
     Column('rejection_reason', String),
     Column('dwell_time_seconds', Integer),
+    # Decision context, snapshotted AT THE SWIPE (added 2026-07-17). The
+    # screening_log join gives screen-time features, but these can differ by
+    # decision time (rescores move lead_score) — and is_holdout here lets an
+    # unbiased eval slice be selected without any join at all.
+    Column('lead_score', Integer),              # the score the queue ranked it by
+    Column('sic_multiplier', Float),            # the industry nudge inside that score
+    Column('is_holdout', Boolean),
+    Column('hours_in_queue', Float),            # assigned -> decided; stale-pile signal
 
     # The CRM Reality
     Column('crm_status', String),
@@ -169,6 +180,7 @@ pipeline_archive = Table(
     Column('export_activity', Boolean),
     Column('lead_score', Integer),
     Column('sic_multiplier', Float),                  # keep in step with sales_leads
+    Column('approve_dwell_seconds', Integer),         # ditto
     Column('employee_count', Integer),
     Column('turnover', BigInteger),
     Column('cash_at_bank', BigInteger),
@@ -513,6 +525,10 @@ _ADDED_COLUMNS = {
     "website_candidates": "JSONB",
     "linkedin_candidates": "JSONB",
     "sic_multiplier": "REAL",
+    # Seconds the AE spent on the card before approving (the pass path logs its
+    # dwell straight to ml_pipeline_analytics; the approve path parks it here
+    # until classify writes the ML row).
+    "approve_dwell_seconds": "INTEGER",
 }
 try:
     with engine.begin() as _conn:
@@ -557,6 +573,9 @@ try:
         for _col, _type in (
             ("website_candidates", "JSONB"), ("linkedin_candidates", "JSONB"),
             ("website_chosen", "VARCHAR"), ("linkedin_chosen", "VARCHAR"),
+            # Decision-context snapshot (see the Table definition above).
+            ("lead_score", "INTEGER"), ("sic_multiplier", "REAL"),
+            ("is_holdout", "BOOLEAN"), ("hours_in_queue", "REAL"),
         ):
             _conn.execute(text(
                 f"ALTER TABLE ml_pipeline_analytics ADD COLUMN IF NOT EXISTS {_col} {_type}"

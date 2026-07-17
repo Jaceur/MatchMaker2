@@ -1,7 +1,12 @@
 """Runtime-tunable settings, stored in the database so the web app and the local
 runners all read the same value.
 
-Today this holds the lead-qualification bar set from the admin dashboard slider.
+Holds the lead-qualification bar (admin slider) plus the get_int_setting /
+get_float_setting pattern that other modules use for their own tunables — the
+holdout rate (pipeline.py), the SIC-weighting shape (sic_weights.py), the
+allocation target (leads.py). Each ships a code default and can be overridden
+by inserting a row into app_settings; delete the row to fall back.
+
 The slider is a friendly 0-100% that maps onto a 30-50 lead_score band, so:
 
     0%  -> bar 30   (let most real companies through)
@@ -36,6 +41,26 @@ def set_setting(key, value):
     stmt = stmt.on_conflict_do_update(index_elements=["key"], set_={"value": str(value)})
     with engine.begin() as conn:
         conn.execute(stmt)
+
+
+def get_int_setting(key, default):
+    """An integer setting with a code default. The pattern for tunables: code
+    ships a sensible constant, and an admin (or a psql one-liner) can override it
+    at runtime via app_settings — no redeploy. Malformed values fall back."""
+    raw = get_setting(key)
+    try:
+        return int(float(raw)) if raw is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def get_float_setting(key, default):
+    """A float setting with a code default; same contract as get_int_setting."""
+    raw = get_setting(key)
+    try:
+        return float(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        return default
 
 
 def qualify_percent_to_bar(percent):
