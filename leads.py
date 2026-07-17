@@ -6,12 +6,46 @@ are shared by the UI pages and the CLI.
 from datetime import datetime
 
 import pandas as pd
-from sqlalchemy import select, delete, insert, text, update
+from sqlalchemy import case, func, or_, select, delete, insert, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
 from models import sales_leads, pipeline_archive, ae_stats
 from settings import get_qualify_bar
+
+
+# ==========================================
+# WHO GETS SEEN  (the bar, and the holdout's exemption from it)
+# ==========================================
+# The pipeline deliberately keeps a random 5% of leads — the HOLDOUT — as
+# ready_for_swipe even when they score below the bar, so we learn what the filter
+# would have thrown away (pipeline.HOLDOUT_RATE). That only works if they
+# actually reach an AE, so both the allocation draft and the swipe queue must let
+# them past the bar. They didn't until 2026-07-17: 170 of 171 below-bar holdout
+# leads had been sitting unswiped and unlabelled, which quietly made the
+# "unbiased" holdout nothing of the sort.
+def _eligible(bar):
+    """A lead an AE should be offered: over the bar, or a holdout."""
+    return or_(sales_leads.c.lead_score >= bar,
+               sales_leads.c.is_holdout.is_(True))
+
+
+def _sort_score(bar):
+    """Rank by fit — but a holdout gets a RANDOM rank within the eligible band.
+
+    Not its real score: a below-bar holdout would sink to the bottom of every
+    pile, and the draft below stops as soon as the reps are full, so it would
+    never be handed out at all — the sample would starve and stay unlabelled.
+    Nor a fixed rank (the bar): every eligible non-holdout scores >= bar, so that
+    is just "last" by another name, and a predictable position leaks the score
+    the AE is deliberately not being shown (the `??` on the card).
+
+    Uniform across the band makes a holdout land wherever a normal lead might,
+    which is the only position that biases nothing."""
+    return case(
+        (sales_leads.c.is_holdout.is_(True), bar + func.random() * (100 - bar)),
+        else_=sales_leads.c.lead_score,
+    )
 
 
 # ==========================================
@@ -70,7 +104,12 @@ def build_ml_row(lead, swiped_by, **overrides):
 def get_pending_leads(ae_username):
     """Fetches this AE's unprocessed leads, best score first. Not cached: the
     swipe page holds the result in a session queue (the real cache) and only
-    calls this when that queue is empty."""
+    calls this when that queue is empty.
+
+    HOLDOUTS ignore the bar (see `_eligible`) and sort as if they were exactly
+    at it, so they land mid-pile rather than at the bottom where nobody would
+    reach them — and so their position doesn't leak the score the AE isn't
+    being shown."""
     bar = get_qualify_bar()
     with engine.connect() as conn:
         query = (
@@ -78,10 +117,10 @@ def get_pending_leads(ae_username):
             .where(
                 (sales_leads.c.status == 'ready_for_swipe')
                 & (sales_leads.c.assigned_ae_username == ae_username)
-                & (sales_leads.c.lead_score >= bar)          # the fit bar (admin slider)
+                & _eligible(bar)
             )
             # Best fit first; confidence in the web data breaks ties.
-            .order_by(sales_leads.c.lead_score.desc(),
+            .order_by(_sort_score(bar).desc(),
                       sales_leads.c.confidence_score.desc())
         )
         return [dict(row) for row in conn.execute(query).mappings().fetchall()]
@@ -177,11 +216,17 @@ def top_up_allocation(target=PENDING_TARGET, commit=True):
         if not need:
             return []
 
+        # Holdouts ride along regardless of score, drafted at a RANDOM rank
+        # within the eligible band (see _sort_score): this loop stops the moment
+        # every rep is full, so anything sorted to the bottom is never handed out
+        # at all — which is how 170 holdout leads ended up stranded.
         pool = conn.execute(text("""
             SELECT id, lead_score FROM sales_leads
             WHERE status = 'ready_for_swipe' AND assigned_ae_username IS NULL
-              AND lead_score >= :bar
-            ORDER BY lead_score DESC
+              AND (lead_score >= :bar OR is_holdout IS TRUE)
+            ORDER BY (CASE WHEN is_holdout IS TRUE
+                           THEN :bar + random() * (100 - :bar)
+                           ELSE lead_score END) DESC
         """), {"bar": bar}).mappings().fetchall()
 
         # Weighted draft: each lead (highest score first) goes to the still-hungry

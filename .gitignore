@@ -214,13 +214,12 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Streamlit
-.streamlit/secrets.toml
+# Streamlit app retired 2026-07-16; .streamlit/ removed. Secrets now live in the
+# root .env (ignored by the "Environments" block above) — see env_loader.py.
 lead_score_distribution.png
 
 # --- React rebuild (Matchmaker 2.0) ---
 .venv-api/
-api/.env
 frontend/node_modules/
 frontend/.next/
 frontend/out/

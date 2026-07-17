@@ -9,8 +9,13 @@ node_modules/
 *.pyc
 .git/
 .github/
-.streamlit/secrets.toml
-api/.env
+# Secrets come from Railway Variables, NEVER the image. `COPY . .` in
+# Dockerfile.api would otherwise bake a local .env into the layers — harmless on
+# Railway (it builds from git, where .env is ignored) but not on a local
+# `docker build`. Keep both the file and any variants out.
+.env
+.env.*
+!.env.example
 *.zip
 digests/
 lead_score_distribution.png

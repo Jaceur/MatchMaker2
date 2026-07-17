@@ -10,7 +10,7 @@ two things alive:
                         score each company) and sweep for SH01/MR01 trigger
                         events over REST.
 
-Config comes from ENVIRONMENT VARIABLES (no secrets.toml needed on the host) —
+Config comes from ENVIRONMENT VARIABLES (no .env file needed on the host) —
 see database.py / ch_client.py. Set these on the platform:
 
     DB_PASSWORD, SUPABASE_HOST, SUPABASE_USER      (SUPABASE_PORT/DBNAME optional)

@@ -9,7 +9,7 @@ Find a full-accounts filer in your data with:
     WHERE account_type IN ('full', 'medium', 'group') LIMIT 10;
 
 Read-only — it only fetches from Companies House and parses in memory; it does
-NOT write to the database. Needs .streamlit/secrets.toml (CH_API_KEY) locally.
+NOT write to the database. Needs a project .env (CH_API_KEY) locally.
 """
 import logging
 import sys

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 import requests
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from ch_client import get_secret   # st.secrets locally, env var on Railway
+from ch_client import get_secret   # .env locally, env var on Railway
 from database import engine
 from models import sales_leads
 

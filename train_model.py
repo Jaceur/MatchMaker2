@@ -10,7 +10,7 @@ It writes a CALIBRATED `lead_model.pkl`. Nothing here touches the live app.
 
     python train_model.py
 
-Needs the Supabase creds (secrets.toml or SUPABASE_*/DB_PASSWORD env vars) and,
+Needs the Supabase creds (a project .env, or SUPABASE_*/DB_PASSWORD env vars) and,
 beyond the app's deps: scikit-learn (>=1.4) and joblib.
 """
 import numpy as np

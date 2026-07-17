@@ -24,6 +24,11 @@ export interface Lead {
   website_accurate?: boolean | null;
   linkedin_accurate?: boolean | null;
   lead_score?: number | null;
+  // A random ~5% of leads bypass the qualification bar so we learn what the
+  // filter would have binned. Their score is HIDDEN from the AE (see
+  // LeadProfile) — seeing a low number would bias the very verdict we're
+  // sampling honestly.
+  is_holdout?: boolean | null;
   confidence_score?: number | null;
   website_score?: number | null;
   linkedin_score?: number | null;

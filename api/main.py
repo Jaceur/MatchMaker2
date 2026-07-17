@@ -7,7 +7,7 @@ shared modules import cleanly:
     uvicorn api.main:app --reload
 
 Requires the same DB env vars the workers use (DB_PASSWORD + SUPABASE_*), plus
-optionally JWT_SECRET and CORS_ORIGINS — see api/.env.example.
+optionally JWT_SECRET and CORS_ORIGINS — see .env.example at the project root.
 """
 from contextlib import asynccontextmanager
 

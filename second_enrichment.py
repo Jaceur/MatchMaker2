@@ -79,7 +79,7 @@ _WORD_NUMBERS = {
 def _ch_get(url, headers=None, params=None, timeout=20):
     """GET with the CH API key, pausing once on a 429 rate-limit. Returns the
     response (or None on a hard failure)."""
-    from ch_client import get_secret  # st.secrets locally, env var on Railway
+    from ch_client import get_secret  # .env locally, env var on Railway
     for _attempt in range(2):
         try:
             resp = requests.get(

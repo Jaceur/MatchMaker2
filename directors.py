@@ -83,7 +83,7 @@ def fetch_top_directors(crn, limit=MAX_DIRECTORS):
     and year of birth, so that's the granularity we sort on.
     """
     try:
-        from ch_client import get_secret  # st.secrets locally, env var on Railway
+        from ch_client import get_secret  # .env locally, env var on Railway
         resp = requests.get(
             CH_OFFICERS_URL.format(crn=crn),
             auth=(get_secret("CH_API_KEY"), ""),

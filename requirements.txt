@@ -8,6 +8,10 @@ streamlit==1.59.1
 extra-streamlit-components==0.1.81   # cookie manager; needs streamlit>=1.40.1
 pg8000==1.31.5
 sqlalchemy==2.0.51
+# Reads the project .env (env_loader.py). REQUIRED by the Railway worker: it
+# builds from this file and imports database.py -> env_loader -> dotenv. Also
+# pinned separately in api/requirements.txt for the API's isolated image.
+python-dotenv==1.2.2
 requests==2.34.2
 ddgs==9.14.4
 beautifulsoup4==4.15.0

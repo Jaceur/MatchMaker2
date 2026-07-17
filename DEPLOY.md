@@ -32,13 +32,13 @@ The worker keeps building with Nixpacks + the root `requirements.txt`, untouched
 
    | Key | Value |
    |---|---|
-   | `DB_PASSWORD` | *(your Supabase DB password, from `.streamlit/secrets.toml`)* |
+   | `DB_PASSWORD` | *(your Supabase DB password — same value as your local `.env`)* |
    | `SUPABASE_HOST` | `aws-0-<region>.pooler.supabase.com` *(from your Supabase dashboard → Connect → Session pooler)* |
    | `SUPABASE_USER` | `postgres.<project-ref>` *(same place)* |
    | `SUPABASE_PORT` | `5432` |
    | `SUPABASE_DBNAME` | `postgres` |
-   | `CH_API_KEY` | *(Companies House REST key, from `.streamlit/secrets.toml`)* — needed for director enrichment |
-   | `JWT_SECRET` | *(a long random string — `python -c "import secrets;print(secrets.token_urlsafe(32))"`)* |
+   | `CH_API_KEY` | *(Companies House REST key — same value as your local `.env`)*. Needed for sourcing **and** director enrichment; a wrong/stale key makes sourcing fail with `API Error: 401` and find 0 leads. **Set it on the worker service too** |
+   | `JWT_SECRET` | *(a long random string — `python -c "import secrets;print(secrets.token_urlsafe(32))"`)*. Leave the variable **absent** rather than blank if you want the DB_PASSWORD fallback |
    | `CORS_ORIGINS` | *(your Vercel URL, e.g. `https://your-app.vercel.app`)* |
 
 4. **Settings → Networking → Generate Domain.** Railway gives you a

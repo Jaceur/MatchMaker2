@@ -19,6 +19,8 @@ from collections import deque
 
 import requests
 
+import env_loader  # noqa: F401  — imported for its side effect: loads .env into os.environ
+
 BASE_URL = "https://api.company-information.service.gov.uk"
 
 REQUEST_TIMEOUT = 15          # never wait forever on a stuck network call
@@ -30,15 +32,10 @@ RATE_LIMIT_WINDOW = 300       # seconds
 
 
 def get_secret(name, default=None):
-    """Read a secret from .streamlit/secrets.toml (how the whole app stores
-    keys), falling back to an environment variable. Lazy so importing this
-    module never requires Streamlit or a secrets file (tests, cron boxes)."""
-    try:
-        import streamlit as st
-        if name in st.secrets:
-            return st.secrets[name]
-    except Exception:
-        pass
+    """Read a secret (CH_API_KEY, CH_STREAM_KEY) from the environment: a local
+    `.env` at the project root, loaded by env_loader, or real env vars on
+    Railway. Kept as a named accessor rather than inlining os.environ.get so
+    there's one obvious seam if the source ever changes again."""
     return os.environ.get(name, default)
 
 
@@ -84,7 +81,8 @@ def _get(path, params=None):
     api_key = get_secret("CH_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "CH_API_KEY not found in .streamlit/secrets.toml or the environment."
+            "CH_API_KEY not found. Set it in the project .env (copy .env.example) "
+            "or as an environment variable."
         )
 
     last_error = None

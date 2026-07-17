@@ -4,11 +4,11 @@ Every other module imports `engine` and `metadata` from here, so there is a
 single connection pool and a single schema registry in play.
 
 The database is hosted on **Supabase** (managed Postgres). Connection details
-come from Streamlit secrets (`.streamlit/secrets.toml`), see the [supabase]
-section there. Use the **Session pooler** connection info from the Supabase
-dashboard (Connect -> Session pooler), NOT the "direct connection": the direct
-host is IPv6-only, which Streamlit Cloud can't reach, whereas the pooler is
-IPv4-friendly and behaves like a normal Postgres connection.
+come from the environment — a local `.env` (see env_loader.py / .env.example) or
+real env vars on Railway. Use the **Session pooler** connection info from the
+Supabase dashboard (Connect -> Session pooler), NOT the "direct connection": the
+direct host is IPv6-only, whereas the pooler is IPv4-friendly and behaves like a
+normal Postgres connection.
 
 Still on the pure-Python `pg8000` driver (no binary wheels), so it installs
 cleanly on the deploy env's bleeding-edge Python.
@@ -17,15 +17,15 @@ import os
 import ssl
 import functools
 
-# Streamlit is optional: the web app has it, but the FastAPI backend and the
-# headless workers import this module without it. When it's absent we fall back
-# to environment variables for config and a plain singleton for the engine.
+import env_loader  # noqa: F401  — imported for its side effect: loads .env into os.environ
+
+# Streamlit is optional and now only used for CACHING (see _cache_resource): the
+# Streamlit app is retired, but the Railway worker still has streamlit installed
+# because it builds from the root requirements.txt. Secrets no longer come from
+# st.secrets — see env_loader.py.
 try:
     import streamlit as st
 except ImportError:
-    # Not installed (the API/workers), or installed but unimportable here (e.g. a
-    # Starlette version pinned for FastAPI that this Streamlit build rejects).
-    # Either way: treat Streamlit as absent and use env vars + a plain singleton.
     st = None
 
 from sqlalchemy import create_engine, MetaData
@@ -41,32 +41,18 @@ def _cache_resource(func):
 
 
 def _conn_params():
-    """Supabase connection settings, from Streamlit secrets when available (the
-    web app) and otherwise from environment variables (a headless host like the
-    always-on worker in ch_worker.py, where there's no secrets.toml). The env
-    var names mirror the secrets keys: DB_PASSWORD, SUPABASE_HOST/PORT/USER/
-    DBNAME."""
-    def secret(section, key=None):
-        # st.secrets raises if there's no secrets file at all — treat any miss
-        # as "not set here, look at the environment instead". Without Streamlit
-        # (the API / workers) there are no secrets at all: go straight to env.
-        if st is None:
-            return None
-        try:
-            return st.secrets[section][key] if key else st.secrets[section]
-        except Exception:
-            return None
-
-    password = secret("DB_PASSWORD") or os.environ.get("DB_PASSWORD")
-    host = secret("supabase", "host") or os.environ.get("SUPABASE_HOST")
-    user = secret("supabase", "user") or os.environ.get("SUPABASE_USER")
-    port = secret("supabase", "port") or os.environ.get("SUPABASE_PORT", 5432)
-    dbname = secret("supabase", "dbname") or os.environ.get("SUPABASE_DBNAME", "postgres")
+    """Supabase connection settings, read from the environment: a local `.env`
+    (loaded by env_loader) or real env vars on Railway."""
+    password = os.environ.get("DB_PASSWORD")
+    host = os.environ.get("SUPABASE_HOST")
+    user = os.environ.get("SUPABASE_USER")
+    port = os.environ.get("SUPABASE_PORT", 5432)
+    dbname = os.environ.get("SUPABASE_DBNAME", "postgres")
     if not (host and user and password):
         raise RuntimeError(
-            "Database config missing. Set a [supabase] section + DB_PASSWORD in "
-            ".streamlit/secrets.toml, or SUPABASE_HOST/SUPABASE_USER/DB_PASSWORD "
-            "environment variables."
+            "Database config missing. Set DB_PASSWORD / SUPABASE_HOST / "
+            "SUPABASE_USER in a .env file at the project root (copy "
+            ".env.example), or as environment variables on the host."
         )
     return host, int(port), user, dbname, str(password)
 
@@ -78,9 +64,9 @@ def _conn_params():
 @_cache_resource
 def get_backend_engine():
     # Structured fields (not a single URL string) so a password containing
-    # symbols like @ : / ? # can't corrupt the connection string — URL.create
-    # escapes each part for us. The password stays under the existing
-    # DB_PASSWORD secret because auth.py also uses it to sign the login cookie.
+    # symbols like @ : / ? # " can't corrupt the connection string — URL.create
+    # escapes each part for us. (The live password does contain a quote, which is
+    # exactly what broke the old TOML secrets file.)
     host, port, user, dbname, password = _conn_params()
     url = URL.create(
         "postgresql+pg8000",

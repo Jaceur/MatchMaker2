@@ -16,7 +16,7 @@ it:
   3. writes progress back to the job row every few leads, so the dashboard can
      show live progress bars, and stops mid-job if the admin hits Cancel.
 
-Config — ENVIRONMENT VARIABLES (no secrets.toml on Railway):
+Config — ENVIRONMENT VARIABLES (no .env file on Railway):
     DB_PASSWORD, SUPABASE_HOST, SUPABASE_USER    (SUPABASE_PORT/DBNAME optional)
     CH_API_KEY                                    (REST key — sourcing + enrichment)
 

@@ -32,8 +32,11 @@ def pipeline_stats() -> dict:
               COUNT(*) FILTER (WHERE status = 'screened_out') AS screened_out,
               COUNT(*) FILTER (WHERE status = 'sourced') AS awaiting_enrichment,
               COUNT(*) FILTER (WHERE status = 'ready_for_swipe' AND lead_score >= :bar) AS qualified,
+              -- Must mirror the allocation pool in leads.top_up_allocation, holdout
+              -- exemption included, or this reads 0 while distribute hands out 170.
               COUNT(*) FILTER (WHERE status = 'ready_for_swipe'
-                               AND assigned_ae_username IS NULL AND lead_score >= :bar) AS awaiting_allocation,
+                               AND assigned_ae_username IS NULL
+                               AND (lead_score >= :bar OR is_holdout IS TRUE)) AS awaiting_allocation,
               AVG(lead_score) FILTER (WHERE status = 'ready_for_swipe' AND lead_score >= :bar) AS avg_qualified,
               COUNT(*) FILTER (WHERE lead_score IS NOT NULL) AS scored,
               COUNT(*) FILTER (WHERE lead_score >= :bar) AS passing

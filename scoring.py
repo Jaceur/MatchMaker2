@@ -22,6 +22,11 @@ That gives exactly the shape asked for: any one minimum passes; a strong lead
 (several big signals) climbs toward ~99 without everyone clamping at a flat 100;
 and weak leads stay well below 50. Thresholds are named constants below — easy to
 tune. Dormant companies are disqualified outright.
+
+The finished score is then scaled by the lead's INDUSTRY multiplier (see
+sic_weights.py): industries convert very differently (~6% for Restaurants/Pubs vs
+~81% for Software/Data against a ~34% baseline), and the rules above can't see
+that. The multiplier is passed in, so this module stays pure.
 """
 from dataclasses import dataclass
 from typing import Optional, Mapping
@@ -202,13 +207,33 @@ def _heuristic_score(f: LeadFeatures) -> int:
     return round(100 * (1.0 - gap))
 
 
-def score_lead(features: LeadFeatures) -> int:
+def _apply_sic(score: int, sic_multiplier: float) -> int:
+    """Nudge a score by its industry's observed conversion (sic_weights.py).
+
+    A MULTIPLIER, not a subtraction, and applied at the end rather than folded
+    into the strengths above: the combining formula only ever pushes a score UP
+    (each signal closes part of the gap to 100), so it has no way to express "this
+    industry converts badly". Scaling the finished score also keeps the penalty
+    proportional — a restaurant with genuinely strong financials can still clear
+    the bar on its other signals, which is the "screen, but not completely" rule.
+    A dormant 0 stays 0."""
+    if sic_multiplier == 1.0:
+        return score
+    return max(0, min(100, round(score * sic_multiplier)))
+
+
+def score_lead(features: LeadFeatures, sic_multiplier: float = 1.0) -> int:
     """A 0-100 "good lead" score (sales fit). THE SWAP POINT for a trained model;
-    callers just get a number from this one function."""
-    return _heuristic_score(features)
+    callers just get a number from this one function.
+
+    `sic_multiplier` comes from sic_weights.multiplier_for(lead's sic_codes);
+    it defaults to 1.0 so every existing caller and test is unaffected. It's
+    passed IN rather than looked up here on purpose — this module stays pure
+    (no database, no network), which is what makes it trivially testable."""
+    return _apply_sic(_heuristic_score(features), sic_multiplier)
 
 
-def best_possible_score(f: LeadFeatures) -> int:
+def best_possible_score(f: LeadFeatures, sic_multiplier: float = 1.0) -> int:
     """Highest score this lead could still reach if every not-yet-measured accounts
     figure turned out favourably. The pipeline's early 'start safe' gate uses this:
     a lead is only binned when even this best case can't reach the bar. A known
@@ -225,7 +250,7 @@ def best_possible_score(f: LeadFeatures) -> int:
         trade_debtors=f.trade_debtors if f.trade_debtors is not None else 1_000_000,
         trade_creditors=f.trade_creditors if f.trade_creditors is not None else 1_000_000,
     )
-    return _heuristic_score(best)
+    return _apply_sic(_heuristic_score(best), sic_multiplier)
 
 
 def features_from_mapping(row: Mapping) -> LeadFeatures:

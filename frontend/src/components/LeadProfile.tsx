@@ -98,8 +98,17 @@ export function LeadProfile({ lead }: { lead: Lead }) {
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/15 text-lg font-bold ring-1 ring-white/30">
             {initials(lead.company_name)}
           </div>
-          <div className="flex h-14 w-14 flex-col items-center justify-center rounded-full bg-white/15 ring-2 ring-white/40">
-            <span className="text-lg font-bold leading-none">{lead.lead_score ?? "—"}</span>
+          {/* Holdout leads show "??" instead of their score: they're the random
+              sample that bypasses the bar to test the filter, so showing a low
+              number would bias the very verdict we're trying to read honestly.
+              The tooltip nudges without hinting which way. */}
+          <div
+            className="flex h-14 w-14 flex-col items-center justify-center rounded-full bg-white/15 ring-2 ring-white/40"
+            title={lead.is_holdout ? "Score hidden — judge this one on its merits." : undefined}
+          >
+            <span className="text-lg font-bold leading-none">
+              {lead.is_holdout ? "??" : lead.lead_score ?? "—"}
+            </span>
             <span className="text-[9px] uppercase tracking-wide text-white/75">fit</span>
           </div>
         </div>

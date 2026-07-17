@@ -9,7 +9,7 @@ Usage:
     python ch_run_local.py 50       # process up to 50
     python ch_run_local.py all      # drain the whole queue
 
-Needs .streamlit/secrets.toml (CH_API_KEY + DB credentials), same as the app.
+Needs a project .env (CH_API_KEY + DB credentials), same as the app.
 """
 import logging
 import sys

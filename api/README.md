@@ -23,8 +23,8 @@ python -m venv .venv-api
 # .venv-api/bin/pip install -r api/requirements.txt          # macOS/Linux
 
 # configure — copy the example and fill in the Supabase creds
-copy api\.env.example api\.env                              # Windows
-# cp api/.env.example api/.env                                # macOS/Linux
+copy .env.example .env                                      # Windows
+# cp .env.example .env                                        # macOS/Linux
 
 # run (must be from the project root)
 .venv-api\Scripts\python -m uvicorn api.main:app --reload --port 8000
@@ -33,8 +33,11 @@ copy api\.env.example api\.env                              # Windows
 - Interactive API docs: <http://localhost:8000/docs>
 - Liveness probe (no DB, no auth): <http://localhost:8000/health>
 
-`api/.env` holds the same values as `.streamlit/secrets.toml` (`DB_PASSWORD` +
-the `SUPABASE_*` host/user/port/dbname). It is **gitignored** — never commit it.
+Config comes from a **single `.env` at the project root**, loaded by
+`env_loader.py` — the same file the worker and the local scripts read, so a
+rotated password is pasted once. (It used to be split: `api/.env` for the API and
+`.streamlit/secrets.toml` for everything else, which is how a rotation silently
+broke half the project.) It is **gitignored** — never commit it.
 
 ## Auth
 

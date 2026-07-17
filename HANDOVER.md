@@ -26,21 +26,26 @@ approved leads into CRM statuses. Points/leaderboard + admin control centre + an
 | **API** (`api/`) | **Railway** service "MatchMaker2" — `matchmaker2-production.up.railway.app` | **Docker** build via `Dockerfile.api` + `railway.api.json` (set in service Settings → Config-as-code). Deliberately NOT named `Dockerfile`/`railway.json` — a default-named file would also be applied to the worker and break it. Env vars: `DB_PASSWORD`, `SUPABASE_HOST/PORT/USER/DBNAME`, **`CH_API_KEY`** (without it director enrichment silently returns "No directors found"), `JWT_SECRET`, `CORS_ORIGINS` (exact Vercel origin, no trailing slash), `PORT=8000`. Health: `/health`; docs: `/docs`. |
 | **Worker** (`lead_worker.py`) | **Railway** service "worker" | Nixpacks + root `requirements.txt` + `Procfile` (`worker: python lead_worker.py`). Drains `pipeline_jobs` (the admin "Gather & enrich" button). Needs to run code that includes the candidates feature (commit `23f696b`+) for new leads to get candidate lists. |
 | ~~**Legacy Streamlit**~~ | — | **Retired 2026-07-16.** No longer deployed. Page files still in the tree pending cleanup (§10). |
-| **DB** | Supabase Postgres, Session pooler + `pg8000` | Connection in `database.py` (secrets.toml locally, env vars headless). |
+| **DB** | Supabase Postgres, Session pooler + `pg8000` | Connection in `database.py`; credentials from the environment via `env_loader.py` (root `.env` locally, Railway Variables headless). |
 | **CHStream** | separate repo `Jaceur/CHStream`, own Railway service | Not part of this repo anymore. |
 
 **Local dev:** API needs its own venv (`.venv-api`) because **the Streamlit in the root
 `requirements.txt` needs Starlette 1.x and FastAPI needs 0.41.x — they cannot share an
 environment**. (Still true even though the Streamlit *app* is retired: the root requirements
-are what the Railway worker builds from, so Streamlit is still installed there.) `pip install -r api/requirements.txt` into `.venv-api`, then from the repo root: `.venv-api\Scripts\python -m uvicorn api.main:app --reload --port 8000`. Frontend: `cd frontend && npm run dev`. Secrets: `api/.env` (gitignored, mirrors secrets.toml). Full walkthroughs in `api/README.md` and `DEPLOY.md`.
+are what the Railway worker builds from, so Streamlit is still installed there.) `pip install -r api/requirements.txt` into `.venv-api`, then from the repo root: `.venv-api\Scripts\python -m uvicorn api.main:app --reload --port 8000`. Frontend: `cd frontend && npm run dev`.
+
+**Secrets: ONE gitignored `.env` at the project root** (copy `.env.example`), loaded by `env_loader.py` and shared by the API, the worker and every local script. Consolidated 2026-07-16 — it used to be split (`api/.env` for the API, `.streamlit/secrets.toml` via `st.secrets` for everything else), which meant a rotated DB password had to be pasted twice; it wasn't, so every local script broke while the deployed app kept working. **`.env` is not TOML — paste values raw, no quotes** (the live DB password contains a `"`, which is what silently broke the old TOML file). Full walkthroughs in `api/README.md` and `DEPLOY.md`.
 
 ## 2. Architecture (file map)
 
 Shared Python modules at repo root (imported by the API **and** the worker — `database`, `models`,
 `settings`, `scoring`, `pipeline`, `enrichment`, `second_enrichment`, `leads`, `directors`,
-`sourcing`, `leaderboard`, `sic_data` + the `ch_*` engine). `database.py` / `leaderboard.py` /
-`sic_data.py` import Streamlit *optionally* (try/except → `st = None`) so the API venv works
-without it; they fall back to env vars + `lru_cache` in place of `st.secrets` + `st.cache_*`.
+`sourcing`, `leaderboard`, `sic_data`, `env_loader` + the `ch_*` engine).
+`database.py` / `leaderboard.py` / `sic_data.py` still import Streamlit *optionally*
+(try/except → `st = None`) so the API venv works without it — but **only for caching now**
+(`st.cache_*` → `lru_cache` fallback). Secrets no longer touch Streamlit at all: `env_loader.py`
+is the single source, imported by `database.py` (DB) and `ch_client.py` (CH keys), which between
+them cover every entry point.
 
 | New file | Responsibility |
 |---|---|
@@ -53,6 +58,7 @@ without it; they fall back to env vars + `lru_cache` in place of `st.secrets` + 
 | `frontend/src/components/` | `SwipeCard` (portrait card + candidate dropdowns + pass overlay), `LeadProfile` (hero + stats grid + copy-name icon), `ClassifyCard` (SalesNav link, email vetting, CRM status), `AppShell`, `ui.tsx` (Button/Card/CopyButton/…) |
 | `frontend/src/app/(app)/` | `swipe` (deck + animations), `pipeline`, `dashboard`, `leaderboard`, `admin`, `analytics`, `new-incorps` (**stub**) |
 | `data/uk_sic_codes.csv` | **The SIC reference data** (728 codes → description + our business grouping). Source of truth for `sic_lookup`; edit it and redeploy to change the table |
+| `env_loader.py` | Loads the root `.env` into `os.environ`. The ONE place secrets come from |
 | `train_model.py` | Offline ML trainer (§8) |
 | `experiment_sic.py` | SIC target-encoding experiment (§8/§9) |
 | `backfill_screening_features.py` | One-time backfill of new screening_log columns (already run) |
@@ -101,6 +107,11 @@ Portrait Tinder-style card (hero = monogram + fit score + name + copy-icon; body
 financials grid, then **Nature of business** — one line per SIC code, `01110 — Growing of cereals…`,
 resolved server-side into `sic_detail` by `sic_data.with_sic_detail`). Next-2 cards preloaded behind, offset right + faded; approve plays a
 tick + fly-to-My-Pipeline animation; advance is **optimistic** (API call in background, rollback on failure).
+- **A HOLDOUT lead's fit score shows `??`, not a number** (`LeadProfile`, keyed off `is_holdout`).
+  Deliberate: holdouts exist to measure the filter honestly, and showing an AE a low score would
+  bias the very verdict being sampled. Don't "fix" this by revealing the score. (Residual risk: `??`
+  only ever appears on holdouts, so an AE could in principle learn to spot them — if that shows up
+  in the data, hide the score for everyone rather than un-hiding it here.)
 - **Sources are dropdowns** of the stored top-5 candidates (website shows domain, LinkedIn shows
   the `/company/` slug under a fixed prefix bar) + "None found" + "Other — type it" (LinkedIn Other =
   slug only, prefix fixed). Chosen URL → `corrected_*` if it differs from the scraped default.
@@ -114,21 +125,82 @@ tick + fly-to-My-Pipeline animation; advance is **optimistic** (API call in back
   copy-buttons), one-at-a-time email vetting (most popular pattern first, ✓/✗, Mailmeteor link),
   CRM status, Save.
 
-## 5. Pipeline / scoring — unchanged fundamentals
+## 5. Pipeline / scoring
 
 Staged pipeline (`pipeline.py`): Stage A cheap CH+HMRC → best-case gate; Stage B accounts parsing
-→ realistic gate; Stage C DDG website+LinkedIn (now also stores top-5 candidates each). 5%
-**holdout** bypasses gates (unbiased training data — do not break this). `lead_score` = rules in
-`scoring.py` (noisy-OR, the ML seam); bar = admin slider (30–50 band, `settings.py`).
+→ realistic gate; Stage C DDG website+LinkedIn (now also stores top-5 candidates each).
+`lead_score` = rules in `scoring.py` (noisy-OR, the ML seam) **× the SIC multiplier** (below);
+bar = admin slider (30–50 band, `settings.py`).
 `rerun_pipeline.py` now resets **only `ready_for_swipe`** leads (not screened-out).
 Admin "Gather & enrich" queues into `pipeline_jobs` for the Railway worker.
+Actual funnel (17.6k leads): **12% binned at Stage A** (dormant, avg score 0), **71% at Stage B**,
+**18% qualify**. So Stage A is in practice a dormancy filter and Stage B is the real gate.
+
+### SIC industry weighting (`sic_weights.py`, added 2026-07-17)
+Industries convert wildly differently, and the rules can't see it. Each group's observed approval
+rate becomes a **multiplier on the finished score** (a multiplier, not a noisy-OR strength — the
+noisy-OR only ever pushes UP, so it cannot express "this industry is bad"; and proportional scaling
+is what keeps it "screen, but not completely"). Damped by sample size:
+
+- Below **`MIN_GROUP_N`=15** decided leads → multiplier is exactly **1.0**. Shrinkage alone wasn't
+  enough of a guard: 100% approval from 4 leads still earned a 1.27× boost.
+- Above it: `w = n/(n+25)`; `effective = w·rate + (1−w)·baseline`; `multiplier = effective/baseline`,
+  clamped to **0.5–1.5**.
+- The multiplier is driven by the **distance from baseline**, so a group sitting at the baseline
+  (Construction: 33% vs 34%) lands at 1.0 whatever its n. The weight only damps noise.
+- Recomputed **every pipeline run** from the log, so it sharpens by itself as leads get swiped.
+  Stored per lead in `sales_leads.sic_multiplier` + `screening_log.sic_multiplier` so any score is
+  auditable, and Stage B's `screen_reason` names the penalty when it's what tipped a lead out.
+- Rates come from the **durable log**, NOT `sales_leads` — see the warning in §6.
+- Live at 2026-07-17 (baseline 34%, n=541): Restaurants/Pubs **0.50**, Financial 0.76, Human health
+  0.80, Construction 0.98 (no change), Retail 1.19, Manufacturing 1.26, Software/Data **1.50**.
+  Only 11 of 55 groups clear n=15; the rest are untouched.
+
+### The 5% holdout — **it was broken, don't re-break it**
+A random 5% bypass the gates so we learn what the filter would have binned. The pipeline always did
+this correctly; **the distribution layer threw them away**. `top_up_allocation` and
+`get_pending_leads` both filtered `lead_score >= bar`, so 170 of 171 below-bar holdout leads sat
+unswiped forever — i.e. the "unbiased" holdout was ~35 above-bar leads and 1 below-bar one, and the
+model's "honest test" in §8 was measuring nothing of the sort. Fixed 2026-07-17 via `leads._eligible`
+/ `leads._sort_score`:
+- Both queries let a holdout past the bar.
+- A holdout sorts at a **random rank within the eligible band** — not its real score (it would sink
+  to the bottom, and the draft stops once reps are full, so it'd never be handed out) and not a
+  fixed rank like the bar (every eligible lead is ≥ bar, so that IS the bottom, and a predictable
+  position leaks the score the card hides).
+- `admin.py`'s `awaiting_allocation` mirrors the same exemption or the dashboard under-reports.
+
+**This is load-bearing for the SIC weighting**: penalise a group and its leads stop clearing the
+bar, so without the holdout its sample freezes and a wrong penalty becomes permanent and
+self-fulfilling. The two features only work together.
 
 ## 6. Analytics board (admin-only, `/analytics`)
 
 Approval-by-industry-group (the `sic_lookup.section` rollup — coarser than per-code, so the
 counts are big enough to read), approval-by-SIC top-20, feature↔approval correlations, CRM-status factor breakdown, score
 calibration (does score predict approval), per-score-band factor table, enrichment coverage.
-Reads the **current pool** (cleared leads drop out) — durable-log version is a known future improvement.
+
+> ### ⚠️ THE BOARD'S APPROVAL RATES ARE INFLATED — don't build on them
+> It reads the **live pool** (`sales_leads WHERE status IN ('approved','archived')`), and
+> `leads.clear_database()` deletes every lead that `is_distinct_from('approved')` — i.e. **"Clear
+> working pool" wipes the PASSES and keeps the APPROVALS.** So every clear ratchets the measured
+> approval rate up, and the drift is invisible.
+>
+> Measured 2026-07-17 — the same question, two sources:
+>
+> | | live pool (this board) | durable log (honest) |
+> |---|---|---|
+> | baseline approval | **51%** (n=922) | **34%** (n=541) |
+> | Restaurants/Pubs | 17% (n=65) | **6%** (n=51) |
+> | Construction | 58% (n=85) | **33%** (n=42) |
+> | Software/Data | 84% (n=43) | **81%** (n=21) |
+>
+> Group *ordering* survives; the magnitudes and the baseline do not. `sic_weights.py` therefore
+> reads the durable log (`screening_log ⋈ ml_pipeline_analytics`) — never this board's source.
+> Scoring off a table an admin can empty with a button would be a live foot-gun.
+>
+> **Fixing the board to read the durable log is now the highest-value item in §10** — until then,
+> treat every percentage on it as an upper bound, and expect it to disagree with `sic_weights.py`.
 
 ## 7. Admin dashboard (`/admin`)
 
@@ -143,9 +215,36 @@ clear pipeline w/ confirm).
   calibration. Writes `lead_model.pkl` (gitignored). **475 labelled / 166 approvals**:
   MODEL ROC-AUC **0.705** / PR-AUC 0.587 vs RULES 0.588/0.439; holdout (n=26, rough) 0.642 vs
   0.509 — **model consistently beats the rules incl. on unbiased data**; calibration Brier 0.204, sane.
-- **Not wired into the app yet.** Next ML step = a `score_lead` loader behind a flag
-  (shared feature-engineering fn; model file → worker; sklearn+joblib deps; note the calibrated
-  output tops out ~60 so the qualification bar's meaning shifts to approval-probability).
+- **Not wired into the app yet, and a straight swap of `score_lead` would be wrong.** Investigated
+  2026-07-17 — three blockers, in order of severity:
+  1. **Train/serve skew.** All 736 labelled rows have `website_score` (100%) — only leads surviving
+     to Stage C ever reach an AE to be labelled. But `score_lead()` runs at Stage **A and B**,
+     before Stage C exists. A model in the gate would score with three features permanently blank
+     that it always had in training. **The model can only score AFTER Stage C** — which is where
+     ranking happens anyway (see below).
+  2. **The scales aren't comparable.** On the same leads: rules median **60** (98% clear the bar of
+     37); calibrated model median **31** (38% clear it). The model centres on the base rate because
+     it's calibrated — correct, but it means a swap makes the 30–50 bar silently ~3× stricter and
+     collapses the AE queues. The bar would need re-deriving from scratch.
+  3. `lead_model.pkl` is **gitignored** (670KB) and Railway builds from git, so the worker gets no
+     model. Needs a delivery decision. sklearn+joblib belong in the **root** requirements only —
+     nothing under `api/` calls `score_lead`; only the worker and local scripts score.
+  Also: the `LeadFeatures` seam is too narrow to be the drop-in it advertises (10 fields; the model
+  needs 23 — SIC, age, web scores, ratios). A model scorer needs the row, not `LeadFeatures`.
+- **The recommended shape: hybrid, split by JOB, not by averaging the scores.** Rules keep the GATE
+  (cheap, run where the model has no features, and they bin 82% of 17.6k — real money). The model
+  takes the RANKING, scored post-Stage-C where its features exist: `get_pending_leads` orders by
+  `lead_score`, and on the honest holdout the rules are a **coin flip (0.531)** at that job. Phase
+  it: `model_score` column in shadow mode → order the queue by it behind a flag → measure → only
+  then consider the gate, and that needs a *separate* model trained on Stage-B-available features.
+- **Retrained 2026-07-17** (n=551, 34% approval): MODEL ROC-AUC 0.694 / PR-AUC 0.546 vs RULES
+  0.600/0.446. Holdout n=28: MODEL **0.708** vs RULES **0.531**. Brier 0.194, bands honest
+  (says 29% → 22% actual; says 63% → 67%). ⚠️ That holdout number is **not trustworthy** — see §5:
+  the holdout was broken, so those 28 are ~27 above-bar leads. Re-measure once the fix has fed
+  through real below-bar swipes.
+- **The trainer sees a different population from the analytics board**: 551 labelled at 34% vs 922
+  decided at 51%. ~390 decided leads have no `ml_pipeline_analytics` row, and the board's rate is
+  inflated by `clear_database()` (§6). Worth understanding before trusting either.
 - SIC: target-encoding ≈ the native `sic_division` categorical (0.708 vs 0.705 — noise). **Not
   worth switching**; SIC is already in the model. But the SIC *signal itself* is real (§9).
 - Tabular features are tapped out at this data size; the levers are (a) more swipes,
@@ -155,44 +254,36 @@ clear pipeline w/ confirm).
   can make a sparse feature all-empty → `sliding_window_view` crash); `cv="prefit"` no longer
   exists in this sklearn; drop features with <10 non-null values before fitting.
 
-## 9. NEXT TASK — SIC-code screening (user request, 2026-07-15)
+## 9. SIC-code screening — **DONE 2026-07-17** (was the "next task")
 
-The user wants to **start screening out poor SIC codes — "maybe not completely"** — e.g.
-pubs/restaurants and real estate.
+Shipped as the industry multiplier in `sic_weights.py` — mechanics in §5, don't duplicate them here.
+The user's brief was "screen out poor SIC codes, **maybe not completely**", weighted by sample size.
+The history of how the numbers moved is kept because it's the cautionary tale:
 
-> ### ⚠️ READ THIS BEFORE ACTING ON THE NUMBERS BELOW
-> The original guidance here was built on a **475-lead sample where the damning codes had n=5–8**.
-> The pool is now **942 decided / 481 approved (51% baseline)**, and the new
-> `sic_lookup.section` grouping (§3) pools codes into samples of n=21–85. **Most of the "0%
-> approval" findings did not survive.** Re-measured 2026-07-16:
+> The original guidance was built on a **475-lead sample where the damning codes had n=5–8**, read
+> off the analytics board — which we now know **inflates approval rates** (§6). Almost none of it
+> survived contact with more data and an honest source:
 >
-> | | old claim (n=5–8) | now | verdict |
+> | | original claim (n=5–8) | honest, 2026-07-17 | verdict |
 > |---|---|---|---|
-> | Food service (`56101/56102/56302`) | 0% | **17%** group (11/65) | **real** — worst group, but not zero |
-> | Construction trades (`43991/43999`) | 0% | `43999` **62%** (8/13); **Construction group 58%** (49/85) | **noise — screening this would have been a mistake** |
-> | Real-estate letting (`68209`) | 0% | **27%** (3/11); Real estate group 39% (14/36) | weak-ish, small n |
-> | Education (`85100`) | 0% | **0%** (0/9) | holds, but n=9 |
-> | Software (`62012`) | 88% | **86%** (12/14); Software/Data group **84%** (36/43) | **holds** |
-> | Real estate buy/sell (`68100`) | 60% | **30%** (3/10) | **reversed** |
+> | Food service | 0% | Restaurants/Pubs group **6%** (n=51) | **real** — the one true signal, now ×0.50 |
+> | Construction trades | 0% | Construction group **33%** vs 34% baseline | **noise — screening it would have been a mistake** |
+> | Real-estate letting | 0% | Real estate group 30% (n=20) | ~neutral (×0.95) |
+> | Education `85100` | 0% | Education group 25% (n=16) | mild (×0.90) |
+> | Software `62012` | 88% | Software/Data **81%** (n=21) | **holds** — ×1.50 |
 >
-> Lesson: at n≈10 a SIC code's rate is nearly meaningless. **Use the group view to decide *whether*
-> a territory is weak, then the code view to decide *what* to screen** — and re-measure rather than
-> trusting any number written here.
+> Two lessons, both now encoded in the design rather than in prose: **at n≈10 a rate means nothing**
+> (hence `MIN_GROUP_N`), and **the baseline you compare against decides the sign of your answer**
+> (law at 30% looks damning against the board's inflated 51% and is a non-event against the true
+> 34%). Re-measure with `python sic_weights.py`; never trust a number written in this file.
 
-Design guidance for the implementer:
-- **"Not completely" matters.** Prefer a **soft penalty in `scoring.py`** (e.g. a SIC-based
-  strength/multiplier on the noisy-OR, or a subtraction) or a **config-driven SIC list**
-  (app_settings or a table, editable from admin) feeding a Stage A gate — NOT a hardcoded drop.
-  The table above is the argument for soft: food service at 17% still converts 1 in 6.
-- **Never bypass the holdout.** Screened-by-SIC leads must still ride the 5% holdout unfiltered,
-  or SIC screening biases exactly the training data that just proved SIC is predictive.
-- Careful with granularity: 68100 and 68209 are both "Real estate activities" but sit at 30% vs
-  27% — and `43999` (62%) vs `43991` (17%) split *inside* Construction. So **screen at 5-digit
-  level, not by group and not by division**; the group is a lens for finding candidates, not the
-  screening key.
-- **`sic_lookup.section` (§3)** is the ready-made handle: 731 codes → 67 groups, and the analytics
-  board's top chart already ranks approval per group with usable sample sizes.
-- Log the reason (`screen_reason = "Stage A · SIC …"`) so the analytics board shows the effect.
+Still open / deliberately not done:
+- **Per-5-digit-code screening.** Weighting is at GROUP level. Codes still split inside a group
+  (`43999` vs `43991`), so a group is a blunt instrument — but no single code has the sample to
+  justify its own multiplier yet. Revisit when codes reach n≈15 individually.
+- **No admin control.** `SHRINK_K` / `MIN_GROUP_N` / the 0.5–1.5 clamp are constants. If tuning
+  becomes routine, move them to `app_settings` behind the admin page.
+- **Existing leads keep their old scores** until `python rescore_leads.py` runs (§12).
 
 ## 10. Other open items
 
@@ -208,18 +299,34 @@ Design guidance for the implementer:
    front-end at cutover**. Port `new_incorps_page.py` to React to get it back.
 3. Old `ready_for_swipe` leads only get candidate dropdowns after `python rerun_pipeline.py` (local).
 4. `score_lead` model loader behind a flag (§8).
-5. **Streamlit cutover cleanup — now unblocked** (retired 2026-07-16), each independent:
+5. **Streamlit cutover cleanup** (retired 2026-07-16) — partially done:
+   - ~~Secrets off `st.secrets` onto one root `.env`; delete `.streamlit/`~~ **DONE 2026-07-16**
+     (`env_loader.py`, §1).
    - Drop the dead `is_nabd` / `contact_email` columns (§3).
    - Delete the page files: `app.py`, `swipe_page.py`, `new_incorps_page.py` (port it first, see 2),
      `lead_card.py`, `admin_panel.py`, `ae_dashboard.py`, `ae_home.py`, `analytics_dashboard.py`,
-     `auth.py`, `lead_score_distribution.py`, `.streamlit/`.
+     `auth.py`, `lead_score_distribution.py`. **`auth.py` is already broken** — it reads
+     `st.secrets["DB_PASSWORD"]`, and the secrets file is gone. Harmless (only `app.py` /
+     `ae_home.py` import it, both Streamlit-only), but it means these files are now dead *and*
+     non-functional, not just unused.
    - Single requirements set: only once the above are gone AND the **worker** is re-tested — it
      builds from the root `requirements.txt`, so dropping Streamlit there is what lets `.venv-api`
-     and the venv split (§1) finally collapse into one environment.
-   - Then the optional-Streamlit shims (`database.py`, `leaderboard.py`, `sic_data.py` try/except
-     `import streamlit`) can become plain code.
+     and the venv split (§1) finally collapse into one environment. Keep `python-dotenv` — the
+     worker now needs it (`database.py` → `env_loader`).
+   - Then the remaining Streamlit shims (`database.py`, `leaderboard.py`, `sic_data.py` try/except
+     `import streamlit`, now **caching-only**) can become plain `lru_cache`.
 6. Vercel preview deployments are login-gated (Deployment Protection) — AEs use the production URL.
-7. Analytics on the durable logs instead of the live pool.
+7. **Analytics on the durable logs instead of the live pool — now the top item.** It isn't a
+   nice-to-have: the board's approval rates are actively *inflated* by `clear_database()` deleting
+   passes and keeping approvals (§6), and it's the screen people read numbers off to make decisions.
+   `sic_weights.py` already has the correct query to copy.
+8. **The holdout backlog.** The §5 fix makes 165 stranded holdout leads allocatable at once —
+   ~71% of the current unassigned pool, so the next distribute would hand AEs mostly `??` leads.
+   They're below-bar by design, so approvals (and the leaderboard) would dip while it drains.
+   Consider capping the holdout share per draft if that bites; steady state is ~20% of a pile.
+9. `clear_database()` deleting passes is arguably a bug in its own right, not just an analytics
+   problem — it destroys the negative half of every training label set. Consider archiving passes
+   the way `clear_pipeline()` archives approvals.
 
 ## 11. CH Lead Engine (unchanged)
 
@@ -241,9 +348,11 @@ cd frontend && npm run dev            # build check: npm run build
 # Pipeline (local, needs secrets):
 python enrich_local.py [N|all]        # enrich sourced leads
 python rerun_pipeline.py              # re-enrich ready_for_swipe leads only
-python rescore_leads.py               # re-score from stored figures (fast)
+python rescore_leads.py               # re-score from stored figures (fast). NOTE: now also
+                                      # applies the SIC multiplier, so it will move ~15k scores
 python sic_data.py                    # reload sic_lookup from data/uk_sic_codes.csv
                                       # (also runs automatically on API startup)
+python sic_weights.py                 # print the live industry multipliers + the data behind them
 # ML:
 python train_model.py                 # train + evaluate vs rules, saves lead_model.pkl
 python experiment_sic.py              # SIC feature experiment

@@ -7,7 +7,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Table, Column, Integer, BigInteger, String, Date, Boolean, DateTime, Numeric,
-    text,
+    Float, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -45,6 +45,10 @@ sales_leads = Table(
     Column('import_activity', Boolean),               # appears as an importer in HMRC UK Trade Info
     Column('export_activity', Boolean),               # appears as an exporter in HMRC UK Trade Info
     Column('lead_score', Integer),                    # composite 0-100 base score (scoring.py)
+    # The industry nudge already baked into lead_score above: how this lead's SIC
+    # group has actually converted, damped by sample size (sic_weights.py).
+    # 1.0 = no adjustment. Stored so a score is auditable after the fact.
+    Column('sic_multiplier', Float),
     Column('employee_count', Integer),                # parsed from the filed accounts (second enrichment)
     # Financials parsed from the accounts (second enrichment). BigInteger as
     # turnover etc. can exceed the 32-bit INT range; foreign_exchange is signed.
@@ -164,6 +168,7 @@ pipeline_archive = Table(
     Column('import_activity', Boolean),
     Column('export_activity', Boolean),
     Column('lead_score', Integer),
+    Column('sic_multiplier', Float),                  # keep in step with sales_leads
     Column('employee_count', Integer),
     Column('turnover', BigInteger),
     Column('cash_at_bank', BigInteger),
@@ -285,6 +290,7 @@ screening_log = Table(
     Column('linkedin_score', Integer),
     # the decision:
     Column('lead_score', Integer),
+    Column('sic_multiplier', Float),                 # the industry nudge inside lead_score
     Column('qualify_bar', Integer),
     Column('qualified', Boolean),
     Column('is_holdout', Boolean),
@@ -506,6 +512,7 @@ _ADDED_COLUMNS = {
     "directors_info": "JSONB",
     "website_candidates": "JSONB",
     "linkedin_candidates": "JSONB",
+    "sic_multiplier": "REAL",
 }
 try:
     with engine.begin() as _conn:
@@ -534,6 +541,8 @@ try:
             ("sic_codes", "VARCHAR(255)"), ("incorporation_date", "DATE"),
             ("confidence_score", "INTEGER"), ("website_score", "INTEGER"),
             ("linkedin_score", "INTEGER"),
+            # The industry nudge baked into lead_score (sic_weights.py).
+            ("sic_multiplier", "REAL"),
         ):
             _conn.execute(text(
                 f"ALTER TABLE screening_log ADD COLUMN IF NOT EXISTS {_col} {_type}"

@@ -21,6 +21,7 @@ from sqlalchemy import select, update, bindparam
 from database import engine
 from models import sales_leads
 from scoring import score_lead, features_from_mapping
+from sic_weights import get_sic_multipliers, multiplier_for
 
 
 def main():
@@ -36,20 +37,27 @@ def main():
         print("No enriched leads to re-score.")
         return
 
+    # One fresh set of industry multipliers for the whole run (see sic_weights).
+    get_sic_multipliers.cache_clear()
+    sic_multipliers = get_sic_multipliers()
+    print(f"SIC weighting: {len(sic_multipliers)} industry groups with history.\n")
+
     updates = []
     changed = 0
     buckets = Counter()
     for row in rows:
-        new = score_lead(features_from_mapping(row))
+        mult = multiplier_for(row.get("sic_codes"), sic_multipliers)
+        new = score_lead(features_from_mapping(row), mult)
         if new != (row.get("lead_score") or 0):
             changed += 1
-        updates.append({"lead_id_param": row["id"], "new_score": new})
+        updates.append({"lead_id_param": row["id"], "new_score": new, "new_mult": mult})
         buckets[10 * (new // 10)] += 1
 
     # One efficient bulk write (executemany) rather than a query per lead.
     stmt = (update(sales_leads)
             .where(sales_leads.c.id == bindparam("lead_id_param"))
-            .values(lead_score=bindparam("new_score")))
+            .values(lead_score=bindparam("new_score"),
+                    sic_multiplier=bindparam("new_mult")))
     with engine.begin() as conn:
         conn.execute(stmt, updates)
 

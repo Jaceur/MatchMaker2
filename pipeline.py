@@ -30,6 +30,7 @@ from enrichment import (
 from second_enrichment import second_enrich_lead
 from scoring import score_lead, best_possible_score, features_from_mapping
 from settings import get_qualify_bar
+from sic_weights import get_sic_multipliers, multiplier_for
 
 # A small random fraction of leads bypass the gates and go to AEs regardless of
 # score (a "holdout"). This is the one thing that keeps the future training data
@@ -51,7 +52,7 @@ def _screened(fields, reason):
     return fields
 
 
-def screen_lead(record, bar=None):
+def screen_lead(record, bar=None, sic_multipliers=None):
     """Run one 'sourced' lead through the staged pipeline. Returns the dict of
     fields to write (including the final status). `bar` defaults to the current
     admin-set qualification bar.
@@ -63,7 +64,13 @@ def screen_lead(record, bar=None):
         bar = get_qualify_bar()
     is_holdout = random.random() < HOLDOUT_RATE
     strict, clean = clean_company_name(record.company_name)
-    print(f"\nScreening: {strict}  (bar {bar}){' [HOLDOUT]' if is_holdout else ''}")
+    # The lead's industry multiplier, from how its SIC group has actually
+    # converted (sic_weights.py). 1.0 = no history / no opinion. Holdouts are
+    # scored with it too — only the GATES below ignore them, so their stored
+    # score stays comparable with everyone else's.
+    sic_mult = multiplier_for(record.sic_codes, sic_multipliers)
+    sic_note = "" if sic_mult == 1.0 else f" [SIC x{sic_mult:.2f}]"
+    print(f"\nScreening: {strict}  (bar {bar}){sic_note}{' [HOLDOUT]' if is_holdout else ''}")
 
     # ---- Stage A: cheap Companies House + HMRC trade ----
     ch = fetch_ch_signals(record.crn)
@@ -75,11 +82,12 @@ def screen_lead(record, bar=None):
         "import_activity": trade["imports"],
         "export_activity": trade["exports"],
         "is_holdout": is_holdout,
+        "sic_multiplier": sic_mult,
     }
     feats = features_from_mapping(fields)
-    fields["lead_score"] = score_lead(feats)
+    fields["lead_score"] = score_lead(feats, sic_mult)
     # Only bin if even a perfect accounts result couldn't reach the bar.
-    best = best_possible_score(feats)
+    best = best_possible_score(feats, sic_mult)
     if best < bar and not is_holdout:
         return _screened(fields, f"Stage A · best-case {best} < bar {bar} (dormant / out of segment)")
 
@@ -87,10 +95,17 @@ def screen_lead(record, bar=None):
     accounts = second_enrich_lead(record.crn)
     fields.update(accounts)
     fields["second_enriched"] = True
-    fields["lead_score"] = score_lead(features_from_mapping(fields))
+    fields["lead_score"] = score_lead(features_from_mapping(fields), sic_mult)
     # The accounts figures are known now, so gate on the realistic score.
     if fields["lead_score"] < bar and not is_holdout:
-        return _screened(fields, f"Stage B · fit score {fields['lead_score']} < bar {bar}")
+        reason = f"Stage B · fit score {fields['lead_score']} < bar {bar}"
+        if sic_mult < 1.0:
+            # Name the industry penalty when it's what tipped the lead out, so
+            # the effect is auditable rather than an invisible hand.
+            unweighted = score_lead(features_from_mapping(fields))
+            if unweighted >= bar:
+                reason += f" (SIC x{sic_mult:.2f}; would have been {unweighted})"
+        return _screened(fields, reason)
 
     # ---- Stage C: costly website + LinkedIn (qualifiers + holdouts) ----
     fields.update(fetch_web_presence(clean, strict))
@@ -124,11 +139,19 @@ def run_pipeline(limit=None, progress_callback=None):
 
     total = len(records)
     bar = get_qualify_bar()                       # one bar for the whole batch
+    # One set of industry multipliers for the whole batch too, recomputed from
+    # the labelled log on every run — that's what makes the weighting sharpen by
+    # itself as more leads get swiped.
+    get_sic_multipliers.cache_clear()
+    sic_multipliers = get_sic_multipliers()
     print(f"Found {total} leads to screen (qualification bar = {bar}/100)...")
+    if sic_multipliers:
+        nudged = {g: m for g, m in sic_multipliers.items() if not 0.95 <= m <= 1.05}
+        print(f"SIC weighting active on {len(nudged)} of {len(sic_multipliers)} industry groups.")
 
     done = 0
     for record in records:
-        fields = screen_lead(record, bar=bar)
+        fields = screen_lead(record, bar=bar, sic_multipliers=sic_multipliers)
         log_row = {
             "lead_id": record.id,
             "crn": record.crn,
@@ -149,6 +172,7 @@ def run_pipeline(limit=None, progress_callback=None):
             "export_activity": fields.get("export_activity"),
             "director_change_recent": fields.get("director_change_recent"),
             "lead_score": fields.get("lead_score"),
+            "sic_multiplier": fields.get("sic_multiplier"),
             "qualify_bar": bar,
             "qualified": fields.get("status") == "ready_for_swipe",
             "is_holdout": fields.get("is_holdout", False),

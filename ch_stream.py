@@ -10,7 +10,7 @@ SH01/MR01 trigger events are detected over plain REST instead (ch_enrich
 .sweep_events, run by ch_run_local.py) — so there's just one streaming process
 to keep alive, and no second stream key budget to worry about.
 
-Needs CH_STREAM_KEY in .streamlit/secrets.toml (or the environment) — a
+Needs CH_STREAM_KEY in the project .env (or the environment) — a
 SEPARATE key from CH_API_KEY, requested in the CH developer hub under
 "streaming". Without a stream key you can still run everything else: the
 ch_backfill.py REST poller feeds the same queue.
@@ -83,7 +83,7 @@ def stream_events(path, stream_name):
     if not stream_key:
         raise RuntimeError(
             "CH_STREAM_KEY not found. Request a Streaming API key in the CH "
-            "developer hub and add it to .streamlit/secrets.toml — or use "
+            "developer hub and add it to the project .env — or use "
             "ch_backfill.py, which needs only the normal REST key."
         )
 
