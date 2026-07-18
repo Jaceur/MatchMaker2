@@ -21,10 +21,14 @@ def stats(user: CurrentUser = Depends(get_current_user)) -> dict:
             SELECT COUNT(*) FROM sales_leads
             WHERE assigned_ae_username = :u AND status = 'approved'
         """), {"u": user.username}).scalar() or 0
+        # "Into CRM" = classified (has a crm_status). A bare row-existence test
+        # would count every approve since labels are written at swipe (2026-07-18),
+        # and a plain JOIN double-counts leads with multiple label rows.
         into_crm = conn.execute(text("""
             SELECT COUNT(*) FROM sales_leads sl
-            JOIN ml_pipeline_analytics m ON m.lead_id = sl.id
             WHERE sl.assigned_ae_username = :u AND sl.status = 'approved'
+              AND EXISTS (SELECT 1 FROM ml_pipeline_analytics m
+                          WHERE m.lead_id = sl.id AND m.crm_status IS NOT NULL)
         """), {"u": user.username}).scalar() or 0
         row = conn.execute(
             select(ae_stats).where(ae_stats.c.username == user.username)

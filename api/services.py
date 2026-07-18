@@ -74,9 +74,15 @@ def pass_lead(lead_id: int, username: str, req) -> None:
 
 
 def approve_lead(lead_id: int, username: str, req) -> str:
-    """Mark a lead approved and stash the AE's source-validation verdicts. Mirrors
-    swipe_page's Approve button. Returns the lead's crn so the caller can kick off
-    post-approval director enrichment."""
+    """Mark a lead approved, stash the AE's source-validation verdicts, and write
+    the ML label row THERE AND THEN. Returns the lead's crn so the caller can
+    kick off post-approval director enrichment.
+
+    The label used to be written only at classify — so an approve the AE never
+    got around to classifying never became training data. That leaked 271
+    approvals (against a training set holding 275) before it was caught
+    2026-07-18. Now the approve IS the label (is_worth_it=True, the swipe-level
+    fact); classify later UPDATES this row with the CRM outcome."""
     lead = get_lead_for_ae(lead_id, username)
     corrected = _corrected_columns(req.corrected_website_url, req.corrected_linkedin_url)
     with engine.begin() as conn:
@@ -85,11 +91,22 @@ def approve_lead(lead_id: int, username: str, req) -> str:
                 status="approved",
                 website_accurate=req.website_valid,
                 linkedin_accurate=req.linkedin_valid,
-                # Parked here until classify writes the ML row (no ML row exists
-                # yet at approve time — classify is where the label lands).
+                # Also kept on the lead: the classify fallback path (leads
+                # approved before this change) reads it, and it archives with
+                # the lead.
                 approve_dwell_seconds=req.dwell_time_seconds,
                 **corrected,
             )
+        )
+        conn.execute(
+            pg_insert(ml_pipeline_analytics).values(**build_ml_row(
+                lead, username,
+                website_valid=req.website_valid, linkedin_valid=req.linkedin_valid,
+                corrected_website_url=(req.corrected_website_url or lead.get("corrected_website_url")),
+                corrected_linkedin_url=(req.corrected_linkedin_url or lead.get("corrected_linkedin_url")),
+                is_worth_it=True,
+                dwell_time_seconds=req.dwell_time_seconds,
+            ))
         )
         award_activity(conn, username, urls_added=len(corrected), leads_swiped=1)
     return lead["crn"]
@@ -112,18 +129,28 @@ def classify_lead(lead_id: int, username: str, crm_status: str, email_verdicts) 
         for v in (email_verdicts or [])
     ]
     with engine.begin() as conn:
-        conn.execute(
-            pg_insert(ml_pipeline_analytics).values(**build_ml_row(
-                lead, username,
-                website_valid=lead.get("website_accurate"),
-                linkedin_valid=lead.get("linkedin_accurate"),
-                corrected_website_url=lead.get("corrected_website_url"),
-                corrected_linkedin_url=lead.get("corrected_linkedin_url"),
-                is_worth_it=True, crm_status=crm_status,
-                # The swipe-time dwell, parked on the lead by approve_lead.
-                dwell_time_seconds=lead.get("approve_dwell_seconds"),
-            ))
-        )
+        # The label row already exists (written at approve) — classify just adds
+        # the CRM outcome to it. The INSERT below is the fallback for leads
+        # approved before approve-time labelling shipped (2026-07-18).
+        updated = conn.execute(
+            update(ml_pipeline_analytics)
+            .where(ml_pipeline_analytics.c.lead_id == lead_id)
+            .where(ml_pipeline_analytics.c.is_worth_it.is_(True))
+            .values(crm_status=crm_status)
+        ).rowcount
+        if not updated:
+            conn.execute(
+                pg_insert(ml_pipeline_analytics).values(**build_ml_row(
+                    lead, username,
+                    website_valid=lead.get("website_accurate"),
+                    linkedin_valid=lead.get("linkedin_accurate"),
+                    corrected_website_url=lead.get("corrected_website_url"),
+                    corrected_linkedin_url=lead.get("corrected_linkedin_url"),
+                    is_worth_it=True, crm_status=crm_status,
+                    # The swipe-time dwell, parked on the lead by approve_lead.
+                    dwell_time_seconds=lead.get("approve_dwell_seconds"),
+                ))
+            )
         # "Won" was retired (GDPR): it's now "Existing Account - Already Claimed",
         # so classify no longer flags is_nabd. The column stays for old rows.
         if email_rows:

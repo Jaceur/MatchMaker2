@@ -266,8 +266,16 @@ clear pipeline w/ confirm).
     (assigned → decided; a stale-pile/reluctance signal). Written by `leads.build_ml_row`.
   - **Approve-side dwell time**: the pass path always logged `dwell_time_seconds`; approves wrote
     NULL — the more interesting half of the decision-latency signal was missing. The swipe card now
-    sends it on approve too; it parks on `sales_leads.approve_dwell_seconds` until classify writes
-    the ML row.
+    sends it on approve too.
+  - **Labels are written AT APPROVE, not at classify (2026-07-18).** The old flow only wrote the
+    ML row at classify, so an approve the AE never classified never became training data — that
+    silently leaked **271 approvals against a training set holding 275**. Now `approve_lead` inserts
+    the label row (`is_worth_it=TRUE`) at swipe time and `classify_lead` UPDATEs it with the CRM
+    outcome (INSERT fallback for pre-change approves). ⚠️ Consequently, **"unclassified" now means
+    `crm_status IS NULL`, not "no ML row"** — the pipeline-page queries, `me.py`'s into-CRM stat
+    (and anything new) must key off `crm_status`, never row-existence.
+    One-time recovery of the 271 leaked approvals: `python backfill_approval_labels.py` — **run it
+    AFTER this change is deployed**, or the new rows hide live leads from the classify list.
   - All label consumers read through **`ml_data.load_labelled_leads()`** — one owner for the
     join and for the durable-log-not-live-pool rule (§6).
 - **Python 3.14 sklearn gotchas** (cost 3 debugging rounds): always pass a **shuffled
@@ -362,6 +370,8 @@ python rescore_leads.py               # re-score from stored figures (fast). NOT
 python sic_data.py                    # reload sic_lookup from data/uk_sic_codes.csv
                                       # (also runs automatically on API startup)
 python sic_weights.py                 # print the live industry multipliers + the data behind them
+python backfill_approval_labels.py    # one-time: recover the 271 pre-2026-07-18 leaked approve labels
+                                      # (run AFTER deploying the label-at-approve change)
 # ML:
 python train_model.py                 # train + evaluate vs rules, saves lead_model.pkl
 python experiment_sic.py              # SIC feature experiment

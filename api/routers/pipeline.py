@@ -16,14 +16,19 @@ router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
 @router.get("/unclassified")
 def unclassified(user: CurrentUser = Depends(get_current_user)) -> list[dict]:
-    """Approved leads still needing a CRM status (no ML row written yet)."""
+    """Approved leads still needing a CRM status.
+
+    "Unclassified" means NO CRM STATUS — not "no ML row". Approves write their
+    label row at swipe time now (2026-07-18), so testing for row-existence would
+    make every approved lead vanish from this list the moment it was swiped."""
     query = text("""
         SELECT sl.*
         FROM sales_leads sl
         WHERE assigned_ae_username = :username
           AND status = 'approved'
           AND NOT EXISTS (
-              SELECT 1 FROM ml_pipeline_analytics m WHERE m.lead_id = sl.id
+              SELECT 1 FROM ml_pipeline_analytics m
+              WHERE m.lead_id = sl.id AND m.crm_status IS NOT NULL
           )
         ORDER BY updated_at DESC, sl.id DESC
     """)
@@ -34,7 +39,11 @@ def unclassified(user: CurrentUser = Depends(get_current_user)) -> list[dict]:
 
 @router.get("/classified")
 def classified(user: CurrentUser = Depends(get_current_user)) -> list[dict]:
-    """Approved leads that already have a CRM status (and an ML row)."""
+    """Approved leads that already have a CRM status.
+
+    Joins the latest ML row WITH a crm_status (approve-time label rows have
+    none), so a lead never shows here — or twice — just because label rows
+    exist."""
     query = text("""
         SELECT
             sl.id,
@@ -46,7 +55,12 @@ def classified(user: CurrentUser = Depends(get_current_user)) -> list[dict]:
             sl.active_directors,
             DATE(sl.updated_at) AS date_approved
         FROM sales_leads sl
-        JOIN ml_pipeline_analytics m ON m.lead_id = sl.id
+        JOIN (
+            SELECT DISTINCT ON (lead_id) lead_id, crm_status
+            FROM ml_pipeline_analytics
+            WHERE crm_status IS NOT NULL
+            ORDER BY lead_id, created_at DESC
+        ) m ON m.lead_id = sl.id
         WHERE sl.assigned_ae_username = :username
           AND sl.status = 'approved'
         ORDER BY sl.updated_at DESC
