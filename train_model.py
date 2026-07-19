@@ -13,59 +13,16 @@ It writes a CALIBRATED `lead_model.pkl`. Nothing here touches the live app.
 Needs the Supabase creds (a project .env, or SUPABASE_*/DB_PASSWORD env vars) and,
 beyond the app's deps: scikit-learn (>=1.4) and joblib.
 """
-import numpy as np
 import pandas as pd
 
 from ml_data import load_labelled_leads
-
-# Raw numeric features. lead_score (the rules output) is EXCLUDED on purpose —
-# feeding it back in would just teach the model to copy the rules.
-NUMERIC = [
-    "employee_count", "turnover", "cash_at_bank", "foreign_exchange",
-    "trade_debtors", "trade_creditors", "confidence_score", "website_score",
-    "linkedin_score", "age_months",
-]
-# Engineered ratios — often carry more signal than the raw figures, ~free to add.
-RATIOS = [
-    "cash_to_turnover", "turnover_per_employee", "debtors_to_turnover",
-    "creditors_to_turnover", "fx_to_turnover",
-]
-BOOLEAN = ["import_activity", "export_activity", "director_change_recent"]
-CATEGORICAL = ["account_type", "sic_division"]
-FEATURES = NUMERIC + RATIOS + BOOLEAN + CATEGORICAL
+from ml_features import BOOLEAN, CATEGORICAL, FEATURES, NUMERIC, RATIOS, engineer
 
 
 def load_dataset() -> pd.DataFrame:
     """The labelled dataset, via the shared loader (ml_data.py owns the join —
     and the reasons it must read the durable log, not sales_leads)."""
     return load_labelled_leads()
-
-
-def _safe_div(num: pd.Series, den: pd.Series) -> pd.Series:
-    """num/den, but only where den > 0 — zero/negative/missing → NaN (which the
-    tree handles natively). Avoids divide-by-zero blowing up a ratio."""
-    return pd.to_numeric(num, errors="coerce") / pd.to_numeric(den, errors="coerce").where(lambda d: d > 0)
-
-
-def engineer(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    inc = pd.to_datetime(df.get("incorporation_date"), errors="coerce")
-    df["age_months"] = ((pd.Timestamp.now() - inc).dt.days // 30).clip(lower=0)
-    df["sic_division"] = (
-        df.get("sic_codes", "").fillna("").astype(str)
-        .str.split(",").str[0].str.strip().str[:2].replace("", np.nan)
-    )
-    # Ratios
-    df["cash_to_turnover"] = _safe_div(df["cash_at_bank"], df["turnover"])
-    df["turnover_per_employee"] = _safe_div(df["turnover"], df["employee_count"])
-    df["debtors_to_turnover"] = _safe_div(df["trade_debtors"], df["turnover"])
-    df["creditors_to_turnover"] = _safe_div(df["trade_creditors"], df["turnover"])
-    df["fx_to_turnover"] = _safe_div(df["foreign_exchange"].abs(), df["turnover"])
-    for b in BOOLEAN:
-        df[b] = df[b].map({True: 1.0, False: 0.0})
-    for c in CATEGORICAL:
-        df[c] = df[c].astype("category")
-    return df
 
 
 def _new_model():

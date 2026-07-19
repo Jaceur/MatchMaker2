@@ -140,6 +140,20 @@ export interface AePerformance {
   sf_entry: number;
 }
 
+// Shadow-mode scoreboard: the trained model (model_score) vs the rules
+// (lead_score) on real decided leads. Evidence only — nothing is wired in.
+export interface ShadowModel {
+  model_deployed: boolean;
+  coverage: { pool: number; scored: number; pct: number };
+  decided_scored: number;
+  approvals: number;
+  model_auc: number | null;
+  rules_auc: number | null;
+  model_precision_at_top: number | null;
+  rules_precision_at_top: number | null;
+  model_bands: { band: string; n: number; approval_rate: number }[];
+}
+
 export interface PipelineJob {
   id: number;
   job_type: string;

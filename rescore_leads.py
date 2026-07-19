@@ -19,6 +19,7 @@ from database import engine
 from models import sales_leads
 from scoring import score_lead, features_from_mapping
 from sic_weights import get_sic_multipliers, multiplier_for
+from model_scorer import score_lead_model
 
 
 def main():
@@ -41,25 +42,35 @@ def main():
 
     updates = []
     changed = 0
+    scored_by_model = 0
     buckets = Counter()
     for row in rows:
         mult = multiplier_for(row.get("sic_codes"), sic_multipliers)
         new = score_lead(features_from_mapping(row), mult)
         if new != (row.get("lead_score") or 0):
             changed += 1
-        updates.append({"lead_id_param": row["id"], "new_score": new, "new_mult": mult})
+        # Shadow model score too, so the admin comparison has data on the
+        # EXISTING pool without waiting for the next enrichment run. None for
+        # leads that never reached Stage C (no web features).
+        ms = score_lead_model(row)
+        if ms is not None:
+            scored_by_model += 1
+        updates.append({"lead_id_param": row["id"], "new_score": new,
+                        "new_mult": mult, "new_model": ms})
         buckets[10 * (new // 10)] += 1
 
     # One efficient bulk write (executemany) rather than a query per lead.
     stmt = (update(sales_leads)
             .where(sales_leads.c.id == bindparam("lead_id_param"))
             .values(lead_score=bindparam("new_score"),
-                    sic_multiplier=bindparam("new_mult")))
+                    sic_multiplier=bindparam("new_mult"),
+                    model_score=bindparam("new_model")))
     with engine.begin() as conn:
         conn.execute(stmt, updates)
 
     total = len(updates)
-    print(f"Re-scored {total} leads — {changed} scores changed.\n")
+    print(f"Re-scored {total} leads — {changed} scores changed.")
+    print(f"Shadow model_score set on {scored_by_model} leads (Stage-C reachable).\n")
     print("New lead_score distribution:")
     for lo in range(0, 101, 10):
         c = buckets.get(lo, 0)

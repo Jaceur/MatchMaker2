@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import type { AdminStats, AePerformance, PipelineJob, AllocationRow } from "@/lib/types";
+import type { AdminStats, AePerformance, PipelineJob, AllocationRow, ShadowModel } from "@/lib/types";
 import { Button, Card, Progress, Spinner } from "@/components/ui";
 
 function Metric({ label, value, accent }: { label: string; value: string | number; accent?: boolean }) {
@@ -27,6 +27,7 @@ const activeJob = (j: PipelineJob | null) => j && (j.status === "pending" || j.s
 
 export default function AdminPage() {
   const [stats, setStats] = useState<AdminStats | null>(null);
+  const [shadow, setShadow] = useState<ShadowModel | null>(null);
   const [aes, setAes] = useState<AePerformance[]>([]);
   const [job, setJob] = useState<PipelineJob | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +46,7 @@ export default function AdminPage() {
     setPercent(s.qualify_percent);
   }, []);
   const loadAes = useCallback(() => api.get<AePerformance[]>("/admin/ae-performance").then(setAes), []);
+  const loadShadow = useCallback(() => api.get<ShadowModel>("/admin/shadow-model").then(setShadow), []);
   const loadJob = useCallback(async () => {
     const jobs = await api.get<PipelineJob[]>("/admin/pipeline-jobs");
     setJob(jobs[0] ?? null);
@@ -52,10 +54,10 @@ export default function AdminPage() {
 
   const refreshAll = useCallback(() => {
     setError(null);
-    Promise.all([loadStats(), loadAes(), loadJob()]).catch((e) =>
+    Promise.all([loadStats(), loadAes(), loadJob(), loadShadow()]).catch((e) =>
       setError(e instanceof ApiError ? e.message : "Failed to load admin data."),
     );
-  }, [loadStats, loadAes, loadJob]);
+  }, [loadStats, loadAes, loadJob, loadShadow]);
 
   useEffect(() => {
     refreshAll();
@@ -298,6 +300,109 @@ export default function AdminPage() {
           <div className="flex justify-center py-6">
             <Spinner className="h-6 w-6" />
           </div>
+        )}
+      </Section>
+
+      {/* Shadow model */}
+      <Section title="🧪 Shadow model (evidence only)">
+        {!shadow ? (
+          <div className="flex justify-center py-6">
+            <Spinner className="h-6 w-6" />
+          </div>
+        ) : !shadow.model_deployed ? (
+          <Card className="p-5 text-sm text-muted">
+            No model scores yet. The model is committed but hasn’t scored any leads —
+            it fills in as new leads pass through enrichment, or immediately after
+            running <code className="rounded bg-surface-2 px-1">rescore_leads.py</code>.
+          </Card>
+        ) : (
+          <Card className="p-5">
+            <p className="mb-4 text-sm text-muted">
+              The trained model runs alongside the rules but drives nothing yet —
+              this is here to see whether it would rank leads better before trusting it.
+              Measured on decided leads only.
+            </p>
+            <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <Metric label="Pool scored" value={`${shadow.coverage.pct}%`} />
+              <Metric label="Decided & scored" value={shadow.decided_scored} />
+              {shadow.decided_scored >= 30 ? (
+                <>
+                  <Metric
+                    label="Model AUC"
+                    value={shadow.model_auc ?? "—"}
+                    accent={
+                      shadow.model_auc != null &&
+                      shadow.rules_auc != null &&
+                      shadow.model_auc > shadow.rules_auc
+                    }
+                  />
+                  <Metric label="Rules AUC" value={shadow.rules_auc ?? "—"} />
+                </>
+              ) : (
+                <div className="col-span-2 flex items-center rounded-lg bg-surface-2 px-4 text-xs text-muted">
+                  Need ≥30 decided-and-scored leads for a meaningful comparison
+                  ({shadow.decided_scored} so far).
+                </div>
+              )}
+            </div>
+
+            {shadow.decided_scored >= 30 && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Card className="bg-surface-2 p-4">
+                  <div className="text-[11px] uppercase tracking-wide text-muted">
+                    Approval rate in each side’s top 20%
+                  </div>
+                  <div className="mt-2 flex items-end gap-6">
+                    <div>
+                      <div className="text-2xl font-bold text-brand">
+                        {shadow.model_precision_at_top ?? "—"}%
+                      </div>
+                      <div className="text-xs text-muted">model-ranked</div>
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold">
+                        {shadow.rules_precision_at_top ?? "—"}%
+                      </div>
+                      <div className="text-xs text-muted">rules-ranked</div>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs text-muted">
+                    Higher = better leads at the top of the pile. The question a
+                    model-ranked queue would answer.
+                  </p>
+                </Card>
+
+                <Card className="bg-surface-2 p-4">
+                  <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">
+                    Approval rate by model score
+                  </div>
+                  {shadow.model_bands.length === 0 ? (
+                    <p className="text-xs text-muted">No bands yet.</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {shadow.model_bands.map((b) => (
+                        <div key={b.band} className="flex items-center gap-2 text-xs">
+                          <span className="w-14 tabular-nums text-muted">{b.band}</span>
+                          <div className="h-4 flex-1 overflow-hidden rounded bg-surface">
+                            <div
+                              className="h-full rounded bg-brand"
+                              style={{ width: `${b.approval_rate}%` }}
+                            />
+                          </div>
+                          <span className="w-16 text-right tabular-nums">
+                            {b.approval_rate}% (n={b.n})
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="mt-2 text-xs text-muted">
+                    Climbing left-to-right = the model’s score means something.
+                  </p>
+                </Card>
+              </div>
+            )}
+          </Card>
         )}
       </Section>
 

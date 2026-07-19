@@ -71,9 +71,9 @@ between them cover every entry point).
 
 - **`sales_leads`**: added `directors_info` JSONB (per-director `{name, officer_id, appointments, url}`),
   `website_candidates` / `linkedin_candidates` JSONB (top-5 scored search results `{url,title,score}`).
-  **Removed from the model: `is_nabd`, `contact_email`** — the DB columns still physically exist.
-  They were kept only because the live Streamlit app selected them; **Streamlit is now retired, so
-  they are safe to drop** (§10). Nothing in the React/API stack reads them.
+  **`is_nabd` / `contact_email` — DROPPED 2026-07-18** (`drop_dead_columns.py`, run against both
+  sales_leads and pipeline_archive). They'd been out of the ORM for ages and only survived
+  physically because the retired Streamlit app SELECTed them; nothing in the current stack did.
 - **`screening_log`** (the durable training features): added `sic_codes`, `incorporation_date`,
   `confidence_score`, `website_score`, `linkedin_score`. Historical rows were backfilled from
   sales_leads/pipeline_archive via `backfill_screening_features.py` (done; hard-cleared leads unrecoverable).
@@ -190,27 +190,19 @@ Approval-by-industry-group (the `sic_lookup.section` rollup — coarser than per
 counts are big enough to read), approval-by-SIC top-20, feature↔approval correlations, CRM-status factor breakdown, score
 calibration (does score predict approval), per-score-band factor table, enrichment coverage.
 
-> ### ⚠️ THE BOARD'S APPROVAL RATES ARE INFLATED — don't build on them
-> It reads the **live pool** (`sales_leads WHERE status IN ('approved','archived')`), and
-> `leads.clear_database()` deletes every lead that `is_distinct_from('approved')` — i.e. **"Clear
-> working pool" wipes the PASSES and keeps the APPROVALS.** So every clear ratchets the measured
-> approval rate up, and the drift is invisible.
->
-> Measured 2026-07-17 — the same question, two sources:
->
-> | | live pool (this board) | durable log (honest) |
-> |---|---|---|
-> | baseline approval | **51%** (n=922) | **34%** (n=541) |
-> | Restaurants/Pubs | 17% (n=65) | **6%** (n=51) |
-> | Construction | 58% (n=85) | **33%** (n=42) |
-> | Software/Data | 84% (n=43) | **81%** (n=21) |
->
-> Group *ordering* survives; the magnitudes and the baseline do not. `sic_weights.py` therefore
-> reads the durable log (`screening_log ⋈ ml_pipeline_analytics`) — never this board's source.
-> Scoring off a table an admin can empty with a button would be a live foot-gun.
->
-> **Fixing the board to read the durable log is now the highest-value item in §10** — until then,
-> treat every percentage on it as an upper bound, and expect it to disagree with `sic_weights.py`.
+**Reads the DURABLE log now (fixed 2026-07-18).** `_decided_frame` in `api/analytics.py` pulls
+`screening_log ⋈ ml_pipeline_analytics` via `ml_data.load_labelled_leads`, so approval rates are
+real and immune to "Clear working pool". `_coverage()` is the deliberate exception — it's a
+live-pool question ("what share of my CURRENT enriched leads have each field").
+
+> **Why it mattered** (kept as the cautionary tale): it used to read the live pool
+> (`sales_leads WHERE status IN ('approved','archived')`), but `leads.clear_database()` deletes
+> every lead `is_distinct_from('approved')` — wiping PASSES, keeping APPROVALS — so every clear
+> ratcheted the measured rate up invisibly. Measured at the time: baseline **51% live vs 34%
+> durable**; Restaurants/Pubs 17% vs 6%; Construction 58% vs 33%. Group *ordering* survived but the
+> magnitudes didn't. `clear_database()` deleting passes at all is arguably still a bug (it destroys
+> the negative half of the label set) — see §10.
+> **Lesson to keep:** anything that reads approval rates goes through `ml_data`, never `sales_leads`.
 
 ## 7. Admin dashboard (`/admin`)
 
@@ -219,12 +211,29 @@ polling + cancel), Lead distribute (default target **40**), Pipeline health metr
 performance (remaining / assigned / approvals / SF entries), cleanup (clear working pool /
 clear pipeline w/ confirm).
 
-## 8. ML status (as of 2026-07-15)
+## 8. ML status (as of 2026-07-18)
 
+- **SHADOW MODE IS LIVE (2026-07-18).** The trained model scores every Stage-C lead alongside the
+  rules and stores `model_score`, but **drives nothing** — no gate, no ordering. It's here to gather
+  model-vs-rules evidence on live leads before trusting it. Pieces:
+  - `ml_features.py` — feature engineering SHARED by train + serve (so they can't drift). Verified
+    byte-identical: row-at-a-time serving == batch training predict, 0 mismatches.
+  - `model_scorer.py` — `score_lead_model(lead) → 0-100 or None`. FAIL-SAFE: missing model / odd
+    lead / pre-Stage-C lead all return None, never raise (shadow scoring must not break enrichment).
+  - `pipeline.py` writes `model_score` at Stage C; `rescore_leads.py` + `backfill_model_scores.py`
+    populate existing rows. Column on sales_leads / pipeline_archive / screening_log.
+  - **Admin panel → "🧪 Shadow model"**: coverage %, model-vs-rules AUC, and **precision@top-20%**
+    (the deployment question: would a model-ranked queue put better leads on top?). Reads the durable
+    log; AUC computed in pure Python (`admin._auc`, matches sklearn) so the API image needs no
+    sklearn. Shows a "gathering data" state until ≥30 decided-and-scored leads exist.
+  - **Model delivery decision made: `lead_model.pkl` is now COMMITTED** (~800KB, un-gitignored). The
+    Railway worker builds from git and needs it; kept OUT of the API image (`.dockerignore`) since
+    the API only reads the column. sklearn+joblib added to the **root** requirements (worker), not
+    `api/requirements.txt`. Retrain = `train_model.py`, commit the new `.pkl`, push.
 - `train_model.py`: HistGradientBoosting + ratio features, holdout-separated eval, sigmoid
-  calibration. Writes `lead_model.pkl` (gitignored). **475 labelled / 166 approvals**:
-  MODEL ROC-AUC **0.705** / PR-AUC 0.587 vs RULES 0.588/0.439; holdout (n=26, rough) 0.642 vs
-  0.509 — **model consistently beats the rules incl. on unbiased data**; calibration Brier 0.204, sane.
+  calibration. **1134 labelled / 547 approvals (48%)** after the approval-leak fix (§8 below):
+  MODEL ROC-AUC **0.745** / PR-AUC 0.725 (CV) vs RULES 0.621/0.611; holdout n=126 MODEL 0.771 vs
+  RULES 0.786 (⚠️ range-restricted — see below); Brier 0.205, top band now honest (n=67, 69%→69%).
 - **Not wired into the app yet, and a straight swap of `score_lead` would be wrong.** Investigated
   2026-07-17 — three blockers, in order of severity:
   1. **Train/serve skew.** All 736 labelled rows have `website_score` (100%) — only leads surviving
@@ -244,9 +253,15 @@ clear pipeline w/ confirm).
 - **The recommended shape: hybrid, split by JOB, not by averaging the scores.** Rules keep the GATE
   (cheap, run where the model has no features, and they bin 82% of 17.6k — real money). The model
   takes the RANKING, scored post-Stage-C where its features exist: `get_pending_leads` orders by
-  `lead_score`, and on the honest holdout the rules are a **coin flip (0.531)** at that job. Phase
-  it: `model_score` column in shadow mode → order the queue by it behind a flag → measure → only
-  then consider the gate, and that needs a *separate* model trained on Stage-B-available features.
+  `lead_score`. Phase it: **✅ `model_score` in shadow mode (done 2026-07-18)** → order the queue by
+  it behind a flag → measure via the admin scoreboard → only then consider the gate, and that needs
+  a *separate* model trained on Stage-B-available features.
+- ⚠️ **Don't read the holdout AUC as "model ≈ rules".** The holdout is ~65% below-bar shells
+  (score ~5, ~1% approve) + a thin above-bar slice — ranking that mixture is trivial and the rules
+  ARE the score defining the two clumps, so ~0.78 for both is near-circular. The deployment question
+  (rank the QUALIFIED pool better) is what the shadow scoreboard's precision@top measures on live
+  swipes; the holdout can't answer it. The earlier "rules are a coin flip (0.531)" claim was on the
+  broken 28-lead holdout — **retracted**.
 - **Retrained 2026-07-17** (n=551, 34% approval): MODEL ROC-AUC 0.694 / PR-AUC 0.546 vs RULES
   0.600/0.446. Holdout n=28: MODEL **0.708** vs RULES **0.531**. Brier 0.194, bands honest
   (says 29% → 22% actual; says 63% → 67%). ⚠️ That holdout number is **not trustworthy** — see §5:
@@ -328,15 +343,11 @@ Still open / deliberately not done:
    history as the reference when porting it to React. The one feature with no front-end.
 3. Old `ready_for_swipe` leads only get candidate dropdowns after `python rerun_pipeline.py` (local).
 4. `score_lead` model loader behind a flag (§8).
-5. **Streamlit cutover cleanup — DONE 2026-07-17** (secrets → `.env` 07-16; page files, `st.*`
-   paths, devcontainer, `matchmaker2.zip` and the streamlit pins all removed 07-17; worker import
-   chain verified with streamlit blocked). One remainder: **drop the dead `is_nabd` /
-   `contact_email` columns** (§3) — a DB change, deliberately left for an explicit decision.
+5. **Streamlit cutover cleanup — DONE.** Secrets → `.env` (07-16); page files, `st.*` paths,
+   devcontainer, `matchmaker2.zip`, streamlit pins (07-17); dead `is_nabd`/`contact_email` columns
+   dropped (07-18, §3). Nothing left.
 6. Vercel preview deployments are login-gated (Deployment Protection) — AEs use the production URL.
-7. **Analytics on the durable logs instead of the live pool — now the top item.** It isn't a
-   nice-to-have: the board's approval rates are actively *inflated* by `clear_database()` deleting
-   passes and keeping approvals (§6), and it's the screen people read numbers off to make decisions.
-   `sic_weights.py` already has the correct query to copy.
+7. **Analytics on the durable log — DONE 2026-07-18** (§6). The board no longer inflates.
 8. **The holdout backlog.** The §5 fix makes 165 stranded holdout leads allocatable at once —
    ~71% of the current unassigned pool, so the next distribute would hand AEs mostly `??` leads.
    They're below-bar by design, so approvals (and the leaderboard) would dip while it drains.
@@ -372,6 +383,9 @@ python sic_data.py                    # reload sic_lookup from data/uk_sic_codes
 python sic_weights.py                 # print the live industry multipliers + the data behind them
 python backfill_approval_labels.py    # one-time: recover the 271 pre-2026-07-18 leaked approve labels
                                       # (run AFTER deploying the label-at-approve change)
+python train_model.py                 # retrain; commit the new lead_model.pkl to ship it to the worker
+python backfill_model_scores.py       # one-time: shadow-score existing leads so the admin panel
+                                      # lights up now (needs sklearn — run in .venv-ml)
 # ML:
 python train_model.py                 # train + evaluate vs rules, saves lead_model.pkl
 python experiment_sic.py              # SIC feature experiment

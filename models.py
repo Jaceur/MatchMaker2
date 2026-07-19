@@ -45,6 +45,11 @@ sales_leads = Table(
     Column('import_activity', Boolean),               # appears as an importer in HMRC UK Trade Info
     Column('export_activity', Boolean),               # appears as an exporter in HMRC UK Trade Info
     Column('lead_score', Integer),                    # composite 0-100 base score (scoring.py)
+    # SHADOW MODE (model_scorer.py): the trained model's approval-probability×100
+    # for this lead, computed at Stage C alongside lead_score. Nothing gates or
+    # ranks on it yet — it's here to gather model-vs-rules evidence on live leads.
+    # NULL for leads that never reached Stage C (the model needs web features).
+    Column('model_score', Integer),
     # The industry nudge already baked into lead_score above: how this lead's SIC
     # group has actually converted, damped by sample size (sic_weights.py).
     # 1.0 = no adjustment. Stored so a score is auditable after the fact.
@@ -179,6 +184,7 @@ pipeline_archive = Table(
     Column('import_activity', Boolean),
     Column('export_activity', Boolean),
     Column('lead_score', Integer),
+    Column('model_score', Integer),                   # keep in step with sales_leads
     Column('sic_multiplier', Float),                  # keep in step with sales_leads
     Column('approve_dwell_seconds', Integer),         # ditto
     Column('employee_count', Integer),
@@ -302,6 +308,7 @@ screening_log = Table(
     Column('linkedin_score', Integer),
     # the decision:
     Column('lead_score', Integer),
+    Column('model_score', Integer),                  # shadow-mode model score (model_scorer.py)
     Column('sic_multiplier', Float),                 # the industry nudge inside lead_score
     Column('qualify_bar', Integer),
     Column('qualified', Boolean),
@@ -529,6 +536,8 @@ _ADDED_COLUMNS = {
     # dwell straight to ml_pipeline_analytics; the approve path parks it here
     # until classify writes the ML row).
     "approve_dwell_seconds": "INTEGER",
+    # Shadow-mode model score (model_scorer.py) — evidence-gathering, not wired in.
+    "model_score": "INTEGER",
 }
 try:
     with engine.begin() as _conn:
@@ -559,6 +568,8 @@ try:
             ("linkedin_score", "INTEGER"),
             # The industry nudge baked into lead_score (sic_weights.py).
             ("sic_multiplier", "REAL"),
+            # Shadow-mode model score (model_scorer.py).
+            ("model_score", "INTEGER"),
         ):
             _conn.execute(text(
                 f"ALTER TABLE screening_log ADD COLUMN IF NOT EXISTS {_col} {_type}"

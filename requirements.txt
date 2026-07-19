@@ -18,6 +18,12 @@ beautifulsoup4==4.15.0
 pandas==3.0.3
 bcrypt==5.0.0
 rapidfuzz==3.14.5
+# Shadow-mode model scoring on the worker (model_scorer.py loads lead_model.pkl
+# and scores each Stage-C lead). The API does NOT need these — it only reads the
+# stored model_score column — so they stay OUT of api/requirements.txt to keep
+# the API image lean. Retraining (train_model.py) uses the same two.
+scikit-learn==1.9.0
+joblib==1.5.3
 
 # Second enrichment (local accounts parsing). pdf2image needs the poppler binary
 # and pytesseract needs the tesseract binary installed on the machine running it.

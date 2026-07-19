@@ -31,6 +31,7 @@ from second_enrichment import second_enrich_lead
 from scoring import score_lead, best_possible_score, features_from_mapping
 from settings import get_float_setting, get_qualify_bar
 from sic_weights import get_sic_multipliers, multiplier_for
+from model_scorer import score_lead_model
 
 # A small random fraction of leads bypass the gates and go to AEs regardless of
 # score (a "holdout"). This is the one thing that keeps the future training data
@@ -117,6 +118,10 @@ def screen_lead(record, bar=None, sic_multipliers=None, holdout_rate=None):
     # ---- Stage C: costly website + LinkedIn (qualifiers + holdouts) ----
     fields.update(fetch_web_presence(clean, strict))
     fields["status"] = "ready_for_swipe"
+    # SHADOW MODE: now that the web features exist, record what the trained model
+    # would score this lead. Purely observational — it changes no gate and no
+    # ordering. None when no model is deployed (model_scorer fails safe).
+    fields["model_score"] = score_lead_model(fields)
     if is_holdout and fields["lead_score"] < bar:
         fields["screen_reason"] = f"HOLDOUT — score {fields['lead_score']} < bar {bar}, kept for training"
         print(f" -> HOLDOUT kept (lead_score {fields['lead_score']} < bar {bar})")
@@ -181,6 +186,7 @@ def run_pipeline(limit=None, progress_callback=None):
             "export_activity": fields.get("export_activity"),
             "director_change_recent": fields.get("director_change_recent"),
             "lead_score": fields.get("lead_score"),
+            "model_score": fields.get("model_score"),
             "sic_multiplier": fields.get("sic_multiplier"),
             "qualify_bar": bar,
             "qualified": fields.get("status") == "ready_for_swipe",

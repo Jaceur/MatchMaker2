@@ -151,8 +151,7 @@ def classify_lead(lead_id: int, username: str, crm_status: str, email_verdicts) 
                     dwell_time_seconds=lead.get("approve_dwell_seconds"),
                 ))
             )
-        # "Won" was retired (GDPR): it's now "Existing Account - Already Claimed",
-        # so classify no longer flags is_nabd. The column stays for old rows.
+        # "Won" was retired (GDPR): it's now "Existing Account - Already Claimed".
         if email_rows:
             conn.execute(insert(director_emails_table), email_rows)
         award_activity(conn, username, leads_saved=1)

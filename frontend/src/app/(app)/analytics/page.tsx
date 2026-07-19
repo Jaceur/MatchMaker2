@@ -81,7 +81,8 @@ export default function AnalyticsPage() {
         <h1 className="text-2xl font-bold">📈 Analytics</h1>
         <p className="mt-1 text-sm text-muted">
           {t.decided} decided leads · {t.approved} approved ({t.approval_rate}% approval rate).
-          Reflects the current pool (cleared leads excluded).
+          Every lead ever decided (from the durable training log) — not the live pool, so
+          clearing leads no longer inflates these numbers.
         </p>
       </header>
 

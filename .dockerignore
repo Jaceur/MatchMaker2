@@ -19,5 +19,8 @@ node_modules/
 *.zip
 digests/
 lead_score_distribution.png
+# The API never runs the model (it only reads the stored model_score column), so
+# keep the committed model out of its image. The worker gets it from git.
+lead_model.pkl
 .pytest_cache/
 .ruff_cache/

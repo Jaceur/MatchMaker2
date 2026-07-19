@@ -1,18 +1,21 @@
 """Analytics computations for the admin board.
 
-All read-only, derived from tables the app already fills. The spine is
-`sales_leads.status`: a *decided* lead is approved or archived (passed), so
-approval = status == 'approved'. Features (SIC, financials, score) come straight
-off sales_leads; the CRM-status breakdown joins ml_pipeline_analytics.
+All read-only. The approval analyses (SIC, correlations, CRM breakdown, score
+calibration) run off the DURABLE log via `_decided_frame` — screening_log
+features ⋈ the ml_pipeline_analytics verdict — NOT the live sales_leads pool.
+That switch (2026-07-18) is deliberate: the live pool's approval rate is inflated
+because `leads.clear_database()` deletes passes but keeps approvals, so every
+"Clear working pool" ratcheted it up. The durable log retains every decided lead.
 
-NB: this reads the current working pool — leads cleared to pipeline_archive
-aren't included. Good enough for a first cut; move features into screening_log
-later if we want it to survive a Clear Pipeline.
+The one exception is `_coverage()`, which is legitimately a live-pool question
+("what share of my CURRENT enriched leads have each field") and still reads
+sales_leads directly.
 """
 import pandas as pd
 from sqlalchemy import text
 
 from database import engine
+from ml_data import load_labelled_leads
 from sic_data import get_sic_records
 
 # Numeric features we test for correlation with approval + summarise per band.
@@ -34,27 +37,32 @@ BOOL_FEATURES = {
 
 
 def _decided_frame() -> pd.DataFrame:
-    """One row per decided lead (approved/passed), with features + crm_status."""
-    query = text("""
-        SELECT sl.id, sl.sic_codes, sl.status, sl.lead_score, sl.confidence_score,
-               sl.turnover, sl.cash_at_bank, sl.foreign_exchange,
-               sl.trade_debtors, sl.trade_creditors, sl.employee_count,
-               sl.import_activity, sl.export_activity, sl.director_change_recent,
-               m.crm_status
-        FROM sales_leads sl
-        LEFT JOIN (
+    """One row per decided lead, with features + verdict + crm_status.
+
+    Reads the DURABLE log (screening_log ⋈ ml_pipeline_analytics) via the shared
+    loader — NOT the live sales_leads pool. This is the 2026-07-18 fix for the
+    board's inflation: `leads.clear_database()` deletes passes and keeps approvals,
+    so the live pool's approval rate climbed with every "Clear working pool"
+    (measured 51% there vs 34% honest). The durable log keeps every decided lead,
+    pass or approve, so the rate is real. `approved` is the human verdict
+    (BOOL_OR(is_worth_it)), not the current status. See ml_data.py."""
+    df = load_labelled_leads()
+    if df.empty:
+        return df
+    df["approved"] = df["approved"].fillna(False).astype(int)
+    # analytics counts rows by "id" — make it the lead id (screening_log's own id
+    # is incidental; one row per lead after the loader's DISTINCT ON).
+    df["id"] = df["lead_id"]
+
+    # Attach the latest CRM status per lead (approve-time label rows have none).
+    with engine.connect() as conn:
+        crm = pd.read_sql(text("""
             SELECT DISTINCT ON (lead_id) lead_id, crm_status
             FROM ml_pipeline_analytics
             WHERE crm_status IS NOT NULL
             ORDER BY lead_id, created_at DESC
-        ) m ON m.lead_id = sl.id
-        WHERE sl.status IN ('approved', 'archived')
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(query, conn)
-    if not df.empty:
-        df["approved"] = (df["status"] == "approved").astype(int)
-    return df
+        """), conn)
+    return df.merge(crm, on="lead_id", how="left")
 
 
 def _sic_reference() -> tuple[dict, dict]:

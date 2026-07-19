@@ -56,6 +56,107 @@ def pipeline_stats() -> dict:
     }
 
 
+def _auc(pairs: list[tuple[float, int]]) -> float | None:
+    """ROC-AUC via the Mann-Whitney rank-sum identity — no sklearn needed (the
+    API image doesn't ship it). pairs = (score, label 0/1). None if a class is
+    empty. Ties get averaged ranks, so it matches sklearn's roc_auc_score."""
+    pos = [s for s, y in pairs if y == 1]
+    neg = [s for s, y in pairs if y == 0]
+    if not pos or not neg:
+        return None
+    order = sorted(pairs, key=lambda p: p[0])
+    ranks, i, n = {}, 0, len(order)
+    while i < n:
+        j = i
+        while j < n and order[j][0] == order[i][0]:
+            j += 1
+        avg_rank = (i + 1 + j) / 2.0  # 1-based, averaged over the tie block
+        for k in range(i, j):
+            ranks[k] = avg_rank
+        i = j
+    rank_sum_pos = sum(
+        r for idx, r in ranks.items() if order[idx][1] == 1
+    )
+    n_pos, n_neg = len(pos), len(neg)
+    return (rank_sum_pos - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+
+
+@router.get("/shadow-model")
+def shadow_model() -> dict:
+    """Shadow-mode scoreboard: how the trained model (model_score) compares to the
+    rules (lead_score) on real decided leads. Evidence only — nothing is wired in.
+
+    Reads the DURABLE log (screening_log ⋈ ml_pipeline_analytics), never the live
+    pool, so 'Clear working pool' can't inflate it (see the analytics §6 warning).
+    """
+    with engine.connect() as conn:
+        # Deployment coverage: what share of the CURRENT swipe pool the model has
+        # scored (a null means the lead predates shadow scoring — run rescore).
+        cov = conn.execute(text("""
+            SELECT COUNT(*) AS pool,
+                   COUNT(model_score) AS scored
+            FROM sales_leads
+            WHERE status IN ('ready_for_swipe', 'approved')
+        """)).mappings().fetchone() or {}
+
+        # Decided leads that carry BOTH a model score and a human verdict.
+        rows = conn.execute(text("""
+            WITH lf AS (
+                SELECT DISTINCT ON (lead_id) lead_id, lead_score, model_score
+                FROM screening_log
+                WHERE lead_id IS NOT NULL AND model_score IS NOT NULL
+                ORDER BY lead_id, created_at DESC
+            ),
+            v AS (
+                SELECT lead_id, BOOL_OR(is_worth_it) AS approved
+                FROM ml_pipeline_analytics
+                WHERE lead_id IS NOT NULL AND is_worth_it IS NOT NULL
+                GROUP BY lead_id
+            )
+            SELECT lf.lead_score, lf.model_score, v.approved::int AS approved
+            FROM lf JOIN v ON v.lead_id = lf.lead_id
+        """)).mappings().fetchall()
+
+    model_pairs = [(float(r["model_score"]), r["approved"]) for r in rows]
+    rules_pairs = [(float(r["lead_score"]), r["approved"]) for r in rows if r["lead_score"] is not None]
+    n = len(rows)
+    approvals = sum(r["approved"] for r in rows)
+
+    # Precision @ top quintile: of the 20% each scorer ranks highest, what share
+    # were approved? The deployment-relevant question — "would ranking by the
+    # model put better leads at the top of the AE's pile?"
+    def precision_at_top(pairs, frac=0.2):
+        if len(pairs) < 5:
+            return None
+        k = max(1, round(len(pairs) * frac))
+        top = sorted(pairs, key=lambda p: p[0], reverse=True)[:k]
+        return round(100 * sum(y for _, y in top) / k)
+
+    # Approval rate by model_score band, for a calibration read on live decisions.
+    bands = []
+    for lo in range(0, 100, 20):
+        seg = [y for s, y in model_pairs if lo <= s < lo + 20]
+        if seg:
+            bands.append({"band": f"{lo}-{lo+19}", "n": len(seg),
+                          "approval_rate": round(100 * sum(seg) / len(seg))})
+
+    return {
+        "model_deployed": bool(cov.get("scored")),
+        "coverage": {
+            "pool": cov.get("pool") or 0,
+            "scored": cov.get("scored") or 0,
+            "pct": round(100 * (cov.get("scored") or 0) / cov["pool"]) if cov.get("pool") else 0,
+        },
+        "decided_scored": n,
+        "approvals": approvals,
+        "model_auc": round(_auc(model_pairs), 3) if _auc(model_pairs) is not None else None,
+        "rules_auc": round(_auc(rules_pairs), 3) if _auc(rules_pairs) is not None else None,
+        "model_precision_at_top": precision_at_top(model_pairs),
+        "rules_precision_at_top": precision_at_top(rules_pairs),
+        "model_bands": bands,
+    }
+
+
 @router.get("/ae-performance")
 def ae_performance() -> list[dict]:
     """Per-AE workload: leads remaining to swipe, total assigned, approvals, and

@@ -230,6 +230,7 @@ npm-debug.log*
 # (frontend/src/lib) — re-include it so the API client/auth/types get committed.
 !frontend/src/lib/
 
-# ML model artifact (regenerable via train_model.py)
-lead_model.pkl
+# The trained model IS committed (see model_scorer.py): the Railway worker
+# builds from git and needs the file to compute shadow scores. It's ~800KB and
+# regenerable via train_model.py — retrain, commit the new .pkl, push.
 .venv-ml/
