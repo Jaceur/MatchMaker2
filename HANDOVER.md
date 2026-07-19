@@ -23,7 +23,7 @@ approved leads into CRM statuses. Points/leaderboard + admin control centre + an
 |---|---|---|
 | **Frontend** (`frontend/`) | **Vercel**, builds `react-rebuild` | Project setting **Root Directory = `frontend`**. Env var `NEXT_PUBLIC_API_URL` = the Railway API URL (must include `https://` — without a scheme the browser treats it as a relative path; `api.ts` now normalises this). |
 | **API** (`api/`) | **Railway** service "MatchMaker2" — `matchmaker2-production.up.railway.app` | **Docker** build via `Dockerfile.api` + `railway.api.json` (set in service Settings → Config-as-code). Deliberately NOT named `Dockerfile`/`railway.json` — a default-named file would also be applied to the worker and break it. Env vars: `DB_PASSWORD`, `SUPABASE_HOST/PORT/USER/DBNAME`, **`CH_API_KEY`** (without it director enrichment silently returns "No directors found"), `JWT_SECRET`, `CORS_ORIGINS` (exact Vercel origin, no trailing slash), `PORT=8000`. Health: `/health`; docs: `/docs`. |
-| **Worker** (`lead_worker.py`) | **Railway** service "worker" | Nixpacks + root `requirements.txt` + `Procfile` (`worker: python lead_worker.py`). Drains `pipeline_jobs` (the admin "Gather & enrich" button). Needs to run code that includes the candidates feature (commit `23f696b`+) for new leads to get candidate lists. |
+| **Worker** (`lead_worker.py`) | **Railway** service "worker" | Nixpacks + root `requirements.txt` + `Procfile` (`worker: python lead_worker.py`). Drains `pipeline_jobs` (the admin "Gather & enrich" button) **and self-enqueues on a schedule** — see the auto-scheduler in §7. |
 | ~~**Legacy Streamlit**~~ | — | **Retired 2026-07-16.** No longer deployed. Page files still in the tree pending cleanup (§10). |
 | **DB** | Supabase Postgres, Session pooler + `pg8000` | Connection in `database.py`; credentials from the environment via `env_loader.py` (root `.env` locally, Railway Variables headless). |
 | **CHStream** | separate repo `Jaceur/CHStream`, own Railway service | Not part of this repo anymore. |
@@ -141,7 +141,8 @@ Admin "Gather & enrich" queues into `pipeline_jobs` for the Railway worker.
 `app_settings` overrides via `settings.get_int_setting`/`get_float_setting` — insert a row to
 override, delete it to fall back. Keys: `holdout_rate` (default 0.05), `pending_target` (20),
 `sic_shrink_k` (25), `sic_min_group_n` (15), `sic_mult_min`/`sic_mult_max` (0.5/1.5),
-`sic_min_total` (100). No admin UI yet — a psql one-liner does it:
+`sic_min_total` (100), and the auto-scheduler's `auto_source_enabled` (1), `auto_source_interval_hours`
+(4), `auto_source_batch` (500), `auto_source_max_awaiting` (1000) — §7. No admin UI yet — a psql one-liner does it:
 `INSERT INTO app_settings(key,value) VALUES ('holdout_rate','0.03') ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;`
 Actual funnel (17.6k leads): **12% binned at Stage A** (dormant, avg score 0), **71% at Stage B**,
 **18% qualify**. So Stage A is in practice a dormancy filter and Stage B is the real gate.
@@ -208,8 +209,21 @@ live-pool question ("what share of my CURRENT enriched leads have each field").
 
 Enrichment-strength slider (commits on release), Gather & enrich (job queue + live progress
 polling + cancel), Lead distribute (default target **40**), Pipeline health metrics, AE
-performance (remaining / assigned / approvals / SF entries), cleanup (clear working pool /
-clear pipeline w/ confirm).
+performance (remaining / assigned / approvals / SF entries), the shadow-model scoreboard (§8),
+cleanup (clear working pool / clear pipeline w/ confirm).
+
+### Auto-scheduler (worker, `lead_worker.maybe_auto_source`, added 2026-07-18)
+When idle, the worker checks ~every 5 min and **enqueues a 500-lead source+enrich job roughly every
+4 hours — but only while the unassigned-qualified buffer is under 1000.** Over the cap it holds off
+without resetting the clock, so it resumes the instant the buffer drains (that's the "off until it
+dips below 1000 again" behaviour). Auto-jobs are ordinary `pipeline_jobs` rows
+(`requested_by='auto-scheduler'`), so they appear in the panel like manual ones; the cadence clock
+(`last_auto_source_at`) lives in `app_settings` so a redeploy doesn't reset it. It won't stack on a
+manual job (skips while any job is pending/running). The decision is a pure function
+(`_auto_source_decision`, unit-tested). **Live-tunable via `app_settings`** (psql; no UI yet):
+`auto_source_enabled` (default 1 — set **0 to switch it off**), `auto_source_interval_hours` (4),
+`auto_source_batch` (500), `auto_source_max_awaiting` (1000). "Awaiting assignment" = the same
+`ready_for_swipe`, unassigned, qualified-or-holdout pool `top_up_allocation` draws from.
 
 ## 8. ML status (as of 2026-07-18)
 
