@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { Lead, DirectorEmails, EmailVerdict } from "@/lib/types";
-import { bareDomain } from "@/lib/format";
+import { bareDomain, daysAgo } from "@/lib/format";
 import { Button, Card, CopyButton, Spinner } from "./ui";
 
 // "Won" retired for GDPR → "Existing Account - Already Claimed".
@@ -127,6 +127,24 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
           <span className="shrink-0 text-sm text-muted">fit {lead.lead_score}</span>
         )}
       </div>
+
+      {/* "Why now" openers — a recent capital raise or new borrowing is a reason
+          to call today, and gives the AE their first line. */}
+      {(lead.capital_raise_recent || lead.charge_recent) && (
+        <div className="mt-3 space-y-1 rounded-lg border border-success/30 bg-success/5 px-3 py-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-success">Why now</p>
+          {lead.capital_raise_recent && (
+            <p className="text-sm">
+              💰 Raised capital{daysAgo(lead.last_capital_raise) ? ` ${daysAgo(lead.last_capital_raise)}` : ""}
+            </p>
+          )}
+          {lead.charge_recent && (
+            <p className="text-sm">
+              🏦 Took on new borrowing{daysAgo(lead.last_charge) ? ` ${daysAgo(lead.last_charge)}` : ""}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Research shortcuts */}
       <div className="mt-3 flex flex-wrap gap-2">

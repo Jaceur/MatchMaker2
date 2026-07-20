@@ -41,8 +41,13 @@ SITE_LINKEDIN_SCORE = 80
 # Companies House extras pulled during enrichment.
 CH_PROFILE_URL = "https://api.company-information.service.gov.uk/company/{crn}"
 CH_FILING_URL = "https://api.company-information.service.gov.uk/company/{crn}/filing-history"
+CH_CHARGES_URL = "https://api.company-information.service.gov.uk/company/{crn}/charges"
 DIRECTOR_CHANGE_FORMS = {"AP01", "TM01"}   # appoint / terminate a person director
 DIRECTOR_CHANGE_RECENT_DAYS = 183          # ~6 months
+# "Why now" triggers: SH01 = capital allotment (raised money / issued shares);
+# MR01 = a registered charge (took on secured borrowing). Both are call reasons.
+CAPITAL_ALLOTMENT_FORMS = {"SH01"}
+TRIGGER_RECENT_DAYS = 183                  # a raise/loan is a live opener this long
 
 # HMRC UK Trade Info (no API key) — does the company appear as an importer /
 # exporter? Direction is structural: separate Imports / Exports navigation sets.
@@ -262,6 +267,68 @@ def fetch_ch_signals(crn):
         "account_type": account_type,
         "last_director_change": last_change,
         "director_change_recent": recent,
+    }
+
+
+def fetch_filing_triggers(crn):
+    """'Why now' events from Companies House — the most recent SH01 (capital
+    raise / shares allotted) and MR01 (a registered charge = new secured
+    borrowing), each with a 'recent' flag (within TRIGGER_RECENT_DAYS).
+
+    Mirrors fetch_ch_signals' shape. These are conversation OPENERS, not score
+    inputs, so the pipeline computes them at Stage C — only on leads that survive
+    to become swipeable — rather than spending two extra CH calls on the ~82% of
+    leads screened out earlier."""
+    from ch_client import get_secret  # .env locally, env var on Railway
+    auth = (get_secret("CH_API_KEY"), "")
+    last_raise = None
+    last_charge = None
+
+    # SH01 — capital allotment, from the 'capital' filing history (same detection
+    # the CH engine uses in ch_enrich._detect_events_rest).
+    try:
+        resp = requests.get(
+            CH_FILING_URL.format(crn=crn), auth=auth,
+            params={"category": "capital", "items_per_page": 100}, timeout=15,
+        )
+        if resp.status_code == 200:
+            dates = []
+            for item in resp.json().get("items", []):
+                ftype = (item.get("type") or "").upper()
+                desc = item.get("description") or ""
+                if (ftype in CAPITAL_ALLOTMENT_FORMS or "capital-allotment" in desc) and item.get("date"):
+                    try:
+                        dates.append(datetime.strptime(item["date"], "%Y-%m-%d").date())
+                    except ValueError:
+                        pass
+            if dates:
+                last_raise = max(dates)
+    except Exception as e:
+        print(f"CH capital filings failed for {crn}: {e}")
+
+    # MR01 — a registered charge, from the charges endpoint (404 = no charges).
+    try:
+        resp = requests.get(CH_CHARGES_URL.format(crn=crn), auth=auth, timeout=15)
+        if resp.status_code == 200:
+            dates = []
+            for item in resp.json().get("items", []):
+                created = item.get("created_on")
+                if created:
+                    try:
+                        dates.append(datetime.strptime(created, "%Y-%m-%d").date())
+                    except ValueError:
+                        pass
+            if dates:
+                last_charge = max(dates)
+    except Exception as e:
+        print(f"CH charges failed for {crn}: {e}")
+
+    cutoff = datetime.now().date() - timedelta(days=TRIGGER_RECENT_DAYS)
+    return {
+        "last_capital_raise": last_raise,
+        "capital_raise_recent": bool(last_raise and last_raise >= cutoff),
+        "last_charge": last_charge,
+        "charge_recent": bool(last_charge and last_charge >= cutoff),
     }
 
 

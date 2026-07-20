@@ -26,6 +26,7 @@ from database import engine
 from models import sales_leads, screening_log
 from enrichment import (
     clean_company_name, fetch_ch_signals, fetch_trade_activity, fetch_web_presence,
+    fetch_filing_triggers,
 )
 from second_enrichment import second_enrich_lead
 from scoring import score_lead, best_possible_score, features_from_mapping
@@ -117,6 +118,10 @@ def screen_lead(record, bar=None, sic_multipliers=None, holdout_rate=None):
 
     # ---- Stage C: costly website + LinkedIn (qualifiers + holdouts) ----
     fields.update(fetch_web_presence(clean, strict))
+    # "Why now" filing triggers (SH01 capital raise / MR01 borrowing) — computed
+    # here, not at Stage A, so we only spend the 2 extra CH calls on leads that
+    # actually become swipeable.
+    fields.update(fetch_filing_triggers(record.crn))
     fields["status"] = "ready_for_swipe"
     # SHADOW MODE: now that the web features exist, record what the trained model
     # would score this lead. Purely observational — it changes no gate and no
@@ -185,6 +190,8 @@ def run_pipeline(limit=None, progress_callback=None):
             "import_activity": fields.get("import_activity"),
             "export_activity": fields.get("export_activity"),
             "director_change_recent": fields.get("director_change_recent"),
+            "capital_raise_recent": fields.get("capital_raise_recent"),
+            "charge_recent": fields.get("charge_recent"),
             "lead_score": fields.get("lead_score"),
             "model_score": fields.get("model_score"),
             "sic_multiplier": fields.get("sic_multiplier"),

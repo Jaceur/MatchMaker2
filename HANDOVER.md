@@ -37,6 +37,12 @@ fastapi installed). Frontend: `cd frontend && npm run dev`. The api/requirements
 what the Docker image installs — keep it lean, it's why the API image doesn't ship pandas' friends
 like ddgs/tesseract.
 
+> **Heads-up (2026-07-18): the `CH_API_KEY` in the local `.env` is dead — every CH call 401s** (the
+> profile endpoint too, not just new code). Railway's key is fine (sourcing/enrichment run there), so
+> this only blocks *local* live CH work — enrichment, `fetch_filing_triggers`, the `ch_*` tools.
+> Drop a current REST key into `.env` to test CH locally. Code that hits CH is written to fail safe
+> on a 401 (returns empty, never crashes), so a dead key degrades quietly rather than breaking runs.
+
 **Secrets: ONE gitignored `.env` at the project root** (copy `.env.example`), loaded by `env_loader.py` and shared by the API, the worker and every local script. Consolidated 2026-07-16 — it used to be split (`api/.env` for the API, `.streamlit/secrets.toml` via `st.secrets` for everything else), which meant a rotated DB password had to be pasted twice; it wasn't, so every local script broke while the deployed app kept working. **`.env` is not TOML — paste values raw, no quotes** (the live DB password contains a `"`, which is what silently broke the old TOML file). Full walkthroughs in `api/README.md` and `DEPLOY.md`.
 
 ## 2. Architecture (file map)
@@ -106,8 +112,9 @@ between them cover every entry point).
 
 ## 4. The React swipe flow (differs from Streamlit)
 
-Portrait Tinder-style card (hero = monogram + fit score + name + copy-icon; body = chips,
-financials grid, then **Nature of business** — one line per SIC code, `01110 — Growing of cereals…`,
+Portrait Tinder-style card (hero = monogram + fit score + name + copy-icon; body = chips —
+tier / Imports / Exports / New director / **💰 Raised capital / 🏦 New borrowing** (§5 triggers) —
+then financials grid, then **Nature of business** — one line per SIC code, `01110 — Growing of cereals…`,
 resolved server-side into `sic_detail` by `sic_data.with_sic_detail`). Next-2 cards preloaded behind, offset right + faded; approve plays a
 tick + fly-to-My-Pipeline animation; advance is **optimistic** (API call in background, rollback on failure).
 - **A HOLDOUT lead's fit score shows `??`, not a number** (`LeadProfile`, keyed off `is_holdout`).
@@ -131,9 +138,21 @@ tick + fly-to-My-Pipeline animation; advance is **optimistic** (API call in back
 ## 5. Pipeline / scoring
 
 Staged pipeline (`pipeline.py`): Stage A cheap CH+HMRC → best-case gate; Stage B accounts parsing
-→ realistic gate; Stage C DDG website+LinkedIn (now also stores top-5 candidates each).
-`lead_score` = rules in `scoring.py` (noisy-OR, the ML seam) **× the SIC multiplier** (below);
-bar = admin slider (30–50 band, `settings.py`).
+→ realistic gate; Stage C DDG website+LinkedIn (top-5 candidates), shadow model score, **and the
+"why now" filing triggers**. `lead_score` = rules in `scoring.py` (noisy-OR, the ML seam) **× the
+SIC multiplier** (below); bar = admin slider (30–50 band, `settings.py`).
+
+### "Why now" filing triggers (`enrichment.fetch_filing_triggers`, added 2026-07-18)
+Two Companies House events surfaced as conversation openers, alongside import/export/new-director:
+**SH01** (capital allotment → "💰 Raised capital") and **MR01** (a registered charge → "🏦 New
+borrowing"). Stored on `sales_leads` as `capital_raise_recent`/`charge_recent` bools + the
+`last_capital_raise`/`last_charge` dates; `recent` = within `TRIGGER_RECENT_DAYS` (183). Rendered as
+chips on the swipe card (`LeadProfile`) and as a dated "Why now" box on the classify card
+(`ClassifyCard`, "…12 days ago" via `format.daysAgo`). **Computed at Stage C, not Stage A** — they're
+openers, not score inputs, so there's no reason to spend 2 extra CH calls on the ~82% of leads
+screened out earlier. Also logged to `screening_log` (the two bools) for future ML; not a model
+feature yet. Detection mirrors `ch_enrich._detect_events_rest` (capital filing history + charges
+endpoint). Fail-safe: any CH error → all-None, never raises (tested).
 `rerun_pipeline.py` now resets **only `ready_for_swipe`** leads (not screened-out).
 Admin "Gather & enrich" queues into `pipeline_jobs` for the Railway worker.
 

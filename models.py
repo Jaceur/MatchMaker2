@@ -44,6 +44,12 @@ sales_leads = Table(
     Column('director_change_recent', Boolean),        # within the last ~6 months
     Column('import_activity', Boolean),               # appears as an importer in HMRC UK Trade Info
     Column('export_activity', Boolean),               # appears as an exporter in HMRC UK Trade Info
+    # "Why now" filing triggers (enrichment.fetch_filing_triggers) — conversation
+    # openers surfaced on the card + classify page, not score inputs.
+    Column('last_capital_raise', Date),               # most recent SH01 (capital allotment)
+    Column('capital_raise_recent', Boolean),          # SH01 within TRIGGER_RECENT_DAYS
+    Column('last_charge', Date),                      # most recent MR01 (registered charge)
+    Column('charge_recent', Boolean),                 # MR01 within TRIGGER_RECENT_DAYS
     Column('lead_score', Integer),                    # composite 0-100 base score (scoring.py)
     # SHADOW MODE (model_scorer.py): the trained model's approval-probability×100
     # for this lead, computed at Stage C alongside lead_score. Nothing gates or
@@ -183,6 +189,10 @@ pipeline_archive = Table(
     Column('director_change_recent', Boolean),
     Column('import_activity', Boolean),
     Column('export_activity', Boolean),
+    Column('last_capital_raise', Date),               # keep in step with sales_leads
+    Column('capital_raise_recent', Boolean),
+    Column('last_charge', Date),
+    Column('charge_recent', Boolean),
     Column('lead_score', Integer),
     Column('model_score', Integer),                   # keep in step with sales_leads
     Column('sic_multiplier', Float),                  # keep in step with sales_leads
@@ -302,6 +312,10 @@ screening_log = Table(
     Column('import_activity', Boolean),
     Column('export_activity', Boolean),
     Column('director_change_recent', Boolean),
+    # "why now" filing triggers (Stage C) — logged for future ML use, not yet
+    # a model feature.
+    Column('capital_raise_recent', Boolean),
+    Column('charge_recent', Boolean),
     # web-presence signals (only set for leads that reach Stage C):
     Column('confidence_score', Integer),
     Column('website_score', Integer),
@@ -538,6 +552,11 @@ _ADDED_COLUMNS = {
     "approve_dwell_seconds": "INTEGER",
     # Shadow-mode model score (model_scorer.py) — evidence-gathering, not wired in.
     "model_score": "INTEGER",
+    # "Why now" filing triggers (enrichment.fetch_filing_triggers).
+    "last_capital_raise": "DATE",
+    "capital_raise_recent": "BOOLEAN",
+    "last_charge": "DATE",
+    "charge_recent": "BOOLEAN",
 }
 try:
     with engine.begin() as _conn:
@@ -570,6 +589,9 @@ try:
             ("sic_multiplier", "REAL"),
             # Shadow-mode model score (model_scorer.py).
             ("model_score", "INTEGER"),
+            # "Why now" filing triggers (enrichment.fetch_filing_triggers).
+            ("capital_raise_recent", "BOOLEAN"),
+            ("charge_recent", "BOOLEAN"),
         ):
             _conn.execute(text(
                 f"ALTER TABLE screening_log ADD COLUMN IF NOT EXISTS {_col} {_type}"

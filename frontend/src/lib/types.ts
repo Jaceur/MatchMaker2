@@ -44,6 +44,11 @@ export interface Lead {
   import_activity?: boolean | null;
   export_activity?: boolean | null;
   director_change_recent?: boolean | null;
+  // "Why now" filing triggers — recent capital raise (SH01) / new borrowing (MR01).
+  capital_raise_recent?: boolean | null;
+  charge_recent?: boolean | null;
+  last_capital_raise?: string | null;
+  last_charge?: string | null;
   website_candidates?: SourceCandidate[] | null;
   linkedin_candidates?: SourceCandidate[] | null;
   // catch-all for the remaining columns

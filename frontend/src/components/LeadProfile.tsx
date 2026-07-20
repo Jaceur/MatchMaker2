@@ -131,12 +131,16 @@ export function LeadProfile({ lead }: { lead: Lead }) {
 
       {/* Body */}
       <div className="space-y-3 px-5 pb-1 pt-3.5">
-        {(tier || lead.import_activity || lead.export_activity || lead.director_change_recent) && (
+        {(tier || lead.import_activity || lead.export_activity || lead.director_change_recent ||
+          lead.capital_raise_recent || lead.charge_recent) && (
           <div className="flex flex-wrap gap-2">
             {tier && <Chip tone={tier === "Small" ? "brand" : "warning"}>{tier} co</Chip>}
             {lead.import_activity && <Chip tone="brand">Imports</Chip>}
             {lead.export_activity && <Chip tone="brand">Exports</Chip>}
             {lead.director_change_recent && <Chip tone="warning">New director</Chip>}
+            {/* "Why now" triggers — a recent raise or new borrowing is a call reason */}
+            {lead.capital_raise_recent && <Chip tone="success">💰 Raised capital</Chip>}
+            {lead.charge_recent && <Chip tone="success">🏦 New borrowing</Chip>}
           </div>
         )}
 

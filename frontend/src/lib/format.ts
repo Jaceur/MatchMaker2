@@ -17,6 +17,20 @@ export function formatDate(v?: string | null): string | null {
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 
+// "12 days ago" / "3 weeks ago" / "on 3 Jul 2026" — for the "why now" openers.
+export function daysAgo(v?: string | null): string | null {
+  if (!v) return null;
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return null;
+  const days = Math.max(0, Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24)));
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 21) return `${days} days ago`;
+  const weeks = Math.round(days / 7);
+  if (weeks < 9) return `${weeks} weeks ago`;
+  return `${Math.round(days / 30)} months ago`;
+}
+
 export function companyAge(v?: string | null): string | null {
   if (!v) return null;
   const d = new Date(v);
