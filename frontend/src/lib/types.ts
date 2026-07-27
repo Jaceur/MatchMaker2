@@ -62,12 +62,18 @@ export interface SourceCandidate {
 }
 
 // One company off the live new-incorporations stream (SSE). Ephemeral — never stored.
+// CHStream enriches each with director / capital / city (best-effort; may be absent).
 export interface Incorp {
   company_number: string;
   company_name?: string | null;
   date_of_creation?: string | null;
   sic_codes?: string[] | string | null;
   received_at: string; // server-stamped arrival time (ISO)
+  city?: string | null;
+  starting_capital?: number | string | null;
+  director_first_name?: string | null;
+  director_last_name?: string | null;
+  director_other_companies?: number | string | null;
   [key: string]: unknown;
 }
 

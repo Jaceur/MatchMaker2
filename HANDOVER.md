@@ -438,7 +438,17 @@ A real-time feed of every new UK incorporation, **ephemeral by design** — no D
 
 **Two deploy requirements — the page is blank until BOTH are done:**
 1. Set **`NEW_INCORP_INGEST_KEY`** on the API (Railway) service (any long random string). Empty = ingest returns 503.
-2. Wire **CHStream** to POST each new company to `https://<api>/new-incorps/ingest` with header `X-Ingest-Key: <same key>` and JSON `{company_number, company_name, date_of_creation, sic_codes}`. CHStream is a SEPARATE repo — the change lives there (make it fire-and-forget so a slow website never stalls the existing Google-Sheet path).
+2. **CHStream is already wired** (2026-07-27, in the separate `CHStream` repo at
+   `C:\Users\joshk\Documents\CHStream`). It was the Google-Sheet worker; switched to website-only —
+   `ch_sheet_stream.py` → **`ch_website_stream.py`** (Procfile updated; **confirm the Railway start
+   command uses the Procfile**, since the entry file was renamed), the Apps Script POST replaced by
+   `post_to_website`. It needs its OWN two env vars: `MATCHMAKER_INGEST_URL` (the `…/new-incorps/ingest`
+   URL) and `NEW_INCORP_INGEST_KEY` (same value as the API service). It POSTs a RICHER payload than
+   the bare schema — `{company_number, company_name, date_of_creation, sic_codes}` **plus** CHStream's
+   enrichment: `city`, `starting_capital`, `director_first_name/last_name/residence/dob`,
+   `director_other_companies`. The ingest schema only *requires* `company_number`; the rest rides
+   through `extra="allow"` to the SSE event, and the page shows director/capital/city/other-cos.
+   A `401`/`503` in CHStream's logs = key missing or mismatched between the two services.
 
 **Gotchas / limits:**
 - **Single API instance only.** The broker is in-process, so ingest and every SSE client must share one process. Today that's true (one Railway API service). Scaling the API to >1 instance breaks the fan-out — you'd need Redis pub/sub or similar.

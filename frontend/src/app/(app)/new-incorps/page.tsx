@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { API_BASE_URL, getToken } from "@/lib/api";
 import type { Incorp } from "@/lib/types";
 import { Card } from "@/components/ui";
+import { formatMoney } from "@/lib/format";
 
 const MAX_ON_SCREEN = 25;
 
@@ -24,6 +25,19 @@ function sicList(v: Incorp["sic_codes"]): string[] {
   if (!v) return [];
   if (Array.isArray(v)) return v.filter(Boolean);
   return String(v).split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+// CHStream's enrichment, when present: who to contact + quality signals.
+function enrichmentBits(c: Incorp): string[] {
+  const bits: string[] = [];
+  const name = [c.director_first_name, c.director_last_name].filter(Boolean).join(" ").trim();
+  if (name) bits.push(`👤 ${name}`);
+  const cap = Number(c.starting_capital);
+  if (Number.isFinite(cap) && cap > 0) bits.push(`💷 ${formatMoney(cap)}`);
+  if (c.city) bits.push(String(c.city));
+  const others = Number(c.director_other_companies);
+  if (Number.isFinite(others) && others > 0) bits.push(`+${others} other co${others > 1 ? "s" : ""}`);
+  return bits;
 }
 
 export default function NewIncorpsPage() {
@@ -109,6 +123,13 @@ export default function NewIncorpsPage() {
                         <span className="font-mono">· SIC {sicList(c.sic_codes).join(", ")}</span>
                       )}
                     </p>
+                    {enrichmentBits(c).length > 0 && (
+                      <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-foreground/80">
+                        {enrichmentBits(c).map((b, i) => (
+                          <span key={i}>{i > 0 && <span className="text-muted">· </span>}{b}</span>
+                        ))}
+                      </p>
+                    )}
                   </div>
                   <span className="shrink-0 whitespace-nowrap text-xs text-muted tabular-nums">
                     {ago(c.received_at, now)}
