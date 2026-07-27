@@ -61,6 +61,16 @@ export interface SourceCandidate {
   score: number;
 }
 
+// One company off the live new-incorporations stream (SSE). Ephemeral — never stored.
+export interface Incorp {
+  company_number: string;
+  company_name?: string | null;
+  date_of_creation?: string | null;
+  sic_codes?: string[] | string | null;
+  received_at: string; // server-stamped arrival time (ISO)
+  [key: string]: unknown;
+}
+
 // One of a lead's SIC codes, resolved server-side against sic_lookup.
 // `description`/`section` are null for a code the table doesn't know.
 export interface SicDetail {

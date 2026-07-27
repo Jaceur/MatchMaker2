@@ -16,6 +16,9 @@ function normalizeBaseUrl(raw?: string): string {
 
 const BASE_URL = normalizeBaseUrl(process.env.NEXT_PUBLIC_API_URL);
 
+// Exposed for EventSource (SSE), which can't go through the fetch wrapper.
+export const API_BASE_URL = BASE_URL;
+
 const TOKEN_KEY = "mm_token";
 
 export function getToken(): string | null {

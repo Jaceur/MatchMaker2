@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .routers import auth, leads, pipeline, me, leaderboard, admin, analytics
+from .routers import auth, leads, pipeline, me, leaderboard, admin, analytics, new_incorps
 
 
 @asynccontextmanager
@@ -50,6 +50,7 @@ app.include_router(me.router)
 app.include_router(leaderboard.router)
 app.include_router(admin.router)
 app.include_router(analytics.router)
+app.include_router(new_incorps.router)
 
 
 @app.get("/health", tags=["meta"])

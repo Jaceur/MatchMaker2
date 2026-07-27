@@ -59,11 +59,11 @@ between them cover every entry point).
 | `api/main.py` | FastAPI app + CORS + router registration |
 | `api/security.py` | JWT auth (reuses `users` table + bcrypt, legacy-plaintext upgrade on login) |
 | `api/services.py` | Streamlit-free pass/approve/classify transactions (mirror the old page logic) |
-| `api/routers/` | `auth, leads (swipe), pipeline (classify), me, leaderboard, admin, analytics` |
+| `api/routers/` | `auth, leads (swipe), pipeline (classify), me, leaderboard, admin, analytics, new_incorps (live SSE stream)` |
 | `api/analytics.py` | pandas computations for the analytics board |
 | `frontend/src/lib/` | `api.ts` (fetch + token), `auth.tsx` (context), `types.ts`, `format.ts` |
 | `frontend/src/components/` | `SwipeCard` (portrait card + candidate dropdowns + pass overlay), `LeadProfile` (hero + stats grid + copy-name icon), `ClassifyCard` (SalesNav link, email vetting, CRM status), `AppShell`, `ui.tsx` (Button/Card/CopyButton/…) |
-| `frontend/src/app/(app)/` | `swipe` (deck + animations), `pipeline`, `dashboard`, `leaderboard`, `admin`, `analytics`, `new-incorps` (**stub**) |
+| `frontend/src/app/(app)/` | `swipe` (deck + animations), `pipeline`, `dashboard`, `leaderboard`, `admin`, `analytics`, `new-incorps` (**live SSE stream**, §13) |
 | `data/uk_sic_codes.csv` | **The SIC reference data** (728 codes → description + our business grouping). Source of truth for `sic_lookup`; edit it and redeploy to change the table |
 | `env_loader.py` | Loads the root `.env` into `os.environ`. The ONE place secrets come from |
 | `ml_data.py` | **The labelled-lead dataset query** (screening_log ⋈ ml_pipeline_analytics). Every training-data consumer (trainer, SIC weights, future models) reads through it — it owns the durable-log-not-live-pool rule |
@@ -371,9 +371,12 @@ Still open / deliberately not done:
    `sic_data.py`, `models.py`, `api/*`, `LeadProfile.tsx`, analytics page, `tests/test_sic_data.py`).
    Commit+push deploys frontend (Vercel) + API (Railway) automatically — and the API deploy is what
    loads `sic_lookup` (§3).
-2. **New Incorps page** — still a stub in the React app. The `ch_*` engine works, but its only UI
-   (the Streamlit page) is retired and now **deleted** — recover `new_incorps_page.py` from git
-   history as the reference when porting it to React. The one feature with no front-end.
+2. **New Incorps page — now a LIVE STREAM** (rebuilt 2026-07-27, §13). A real-time, ephemeral SSE
+   feed of every new UK incorporation, newest-on-top, rolling window of 25, nothing stored. This is
+   a DIFFERENT thing from the old score-ranked DB page (`new_incorps_page.py` in git history, if you
+   ever want the tiered/scored view back). Currently unfiltered ("show everyone") — filters are the
+   agreed next step. **Needs `NEW_INCORP_INGEST_KEY` set on the API service and CHStream wired to
+   POST to it — see §13; it shows nothing until CHStream is pointed at it.**
 3. Old `ready_for_swipe` leads only get candidate dropdowns after `python rerun_pipeline.py` (local).
 4. `score_lead` model loader behind a flag (§8).
 5. **Streamlit cutover cleanup — DONE.** Secrets → `.env` (07-16); page files, `st.*` paths,
@@ -423,3 +426,21 @@ python backfill_model_scores.py       # one-time: shadow-score existing leads so
 python train_model.py                 # train + evaluate vs rules, saves lead_model.pkl
 python experiment_sic.py              # SIC feature experiment
 ```
+
+## 13. New-incorps live stream (added 2026-07-27)
+
+A real-time feed of every new UK incorporation, **ephemeral by design** — no DB, no persistence.
+
+**Flow:** `CHStream (separate Railway service) --POST per company--> API /new-incorps/ingest --in-memory fan-out--> API /new-incorps/stream (SSE) --> React /new-incorps page (rolling 25, newest on top)`.
+
+- **`api/routers/new_incorps.py`** — an in-process `_Broker` (a set of per-client `asyncio.Queue` + a `deque(maxlen=25)` ring buffer). `POST /ingest` (auth: `X-Ingest-Key` header == `NEW_INCORP_INGEST_KEY`, else 401/503) publishes; `GET /stream?token=<JWT>` is the SSE endpoint (EventSource can't send an Authorization header, so the JWT rides as a query param — the data is public CH records but the page is behind login). On connect it replays the current 25, then streams live. Heartbeat comment every 15s.
+- **Frontend** `(app)/new-incorps/page.tsx` — `EventSource` (auto-reconnects), prepends newest, caps at 25, de-dupes the buffer replay, animates with `motion`. Live "Xs ago" latency label. `API_BASE_URL` is now exported from `lib/api.ts` for the raw SSE URL.
+
+**Two deploy requirements — the page is blank until BOTH are done:**
+1. Set **`NEW_INCORP_INGEST_KEY`** on the API (Railway) service (any long random string). Empty = ingest returns 503.
+2. Wire **CHStream** to POST each new company to `https://<api>/new-incorps/ingest` with header `X-Ingest-Key: <same key>` and JSON `{company_number, company_name, date_of_creation, sic_codes}`. CHStream is a SEPARATE repo — the change lives there (make it fire-and-forget so a slow website never stalls the existing Google-Sheet path).
+
+**Gotchas / limits:**
+- **Single API instance only.** The broker is in-process, so ingest and every SSE client must share one process. Today that's true (one Railway API service). Scaling the API to >1 instance breaks the fan-out — you'd need Redis pub/sub or similar.
+- **Unfiltered** ("show everyone") for the first test — that's ~1,500–2,500/day, so the 25-window churns fast. Filtering to the good ones (CHStream's scored/Tier-1-2) is the agreed next step.
+- The `ch_*` tables + the old score-ranked page are **not** involved here; this is a fresh, storage-free path. If you want the tiered/scored/send-to-swipe view too, that's the old `new_incorps_page.py` design (git history), a separate build.

@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # Comma-separated list of allowed frontend origins for CORS.
     cors_origins: str = "http://localhost:3000"
 
+    # Shared secret CHStream sends as the X-Ingest-Key header on POST
+    # /new-incorps/ingest. Empty = ingest disabled (returns 503), so the endpoint
+    # is never open by accident. Env: NEW_INCORP_INGEST_KEY.
+    new_incorp_ingest_key: str = ""
+
     @field_validator("jwt_secret")
     @classmethod
     def _resolve_jwt_secret(cls, value: str) -> str:
