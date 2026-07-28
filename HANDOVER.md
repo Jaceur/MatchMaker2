@@ -134,6 +134,14 @@ tick + fly-to-My-Pipeline animation; advance is **optimistic** (API call in back
   (copies bare domain to clipboard — user's work laptop blocks paste INTO the app, hence
   copy-buttons), one-at-a-time email vetting (most popular pattern first, ✓/✗, Mailmeteor link),
   CRM status, Save.
+- **"📋 Copy 5 for Salesforce"** (per director, added 2026-07-28) — loads First name, Last name,
+  Title ("Director"), Company and a placeholder phone into the **Windows clipboard history** as 5
+  separate entries, so the AE pastes each with **Win+V** (their SF is locked-down — no integration).
+  Written oldest-first with a **250ms gap between writes** (too fast and Windows collapses them into
+  one entry — tunable if a machine needs more), ordered so Win+V's newest-first list reads down the
+  SF form (First, Last, Title, Company, Phone). Phone is an **Ofcom reserved fictional mobile**
+  (`+447700900xxx`) — valid format, never a real line. All client-side in `ClassifyCard.tsx`
+  (`copyToClipboardHistory` / `fakeMobile`); depends on Windows "Clipboard history" being enabled.
 
 ## 5. Pipeline / scoring
 
@@ -440,9 +448,10 @@ A real-time feed of every new UK incorporation, **ephemeral by design** — no D
 1. Set **`NEW_INCORP_INGEST_KEY`** on the API (Railway) service (any long random string). Empty = ingest returns 503.
 2. **CHStream is already wired** (2026-07-27, in the separate `CHStream` repo at
    `C:\Users\joshk\Documents\CHStream`). It was the Google-Sheet worker; switched to website-only —
-   `ch_sheet_stream.py` → **`ch_website_stream.py`** (Procfile updated; **confirm the Railway start
-   command uses the Procfile**, since the entry file was renamed), the Apps Script POST replaced by
-   `post_to_website`. It needs its OWN two env vars: `MATCHMAKER_INGEST_URL` (the `…/new-incorps/ingest`
+   the Apps Script POST in **`ch_sheet_stream.py`** replaced by `post_to_website`. (Filename kept:
+   Railway has a **custom start command** `python ch_sheet_stream.py` that overrides the Procfile, so
+   an earlier rename to `ch_website_stream.py` broke the deploy with "can't open file". Don't rename
+   the entry file without also changing that Railway setting.) It needs its OWN two env vars: `MATCHMAKER_INGEST_URL` (the `…/new-incorps/ingest`
    URL) and `NEW_INCORP_INGEST_KEY` (same value as the API service). It POSTs a RICHER payload than
    the bare schema — `{company_number, company_name, date_of_creation, sic_codes}` **plus** CHStream's
    enrichment: `city`, `starting_capital`, `director_first_name/last_name/residence/dob`,
