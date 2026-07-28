@@ -27,6 +27,24 @@ function sicList(v: Incorp["sic_codes"]): string[] {
   return String(v).split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+// A placeholder UK mobile in Ofcom's reserved fictional range (07700 900000–
+// 900999 → +447700900xxx). Valid format, guaranteed never a real person's line —
+// safe for a Salesforce phone field that just needs to be non-empty.
+const fakeMobile = () =>
+  `+447700900${String(Math.floor(Math.random() * 1000)).padStart(3, "0")}`;
+
+// Write several values to the clipboard in sequence so each lands as its OWN
+// entry in the Windows clipboard history (Win+V). The gap between writes is
+// required — too fast and Windows collapses them into one entry. Values are
+// given oldest-first; Win+V lists newest-first, so the caller orders them so the
+// first field it wants ends up on top.
+async function copyToClipboardHistory(values: string[]): Promise<void> {
+  for (const v of values) {
+    await navigator.clipboard.writeText(v);
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 // CHStream's enrichment, when present: who to contact + quality signals.
 function enrichmentBits(c: Incorp): string[] {
   const bits: string[] = [];
@@ -44,7 +62,31 @@ export default function NewIncorpsPage() {
   const [items, setItems] = useState<Incorp[]>([]);
   const [status, setStatus] = useState<Status>("connecting");
   const [now, setNow] = useState(() => Date.now());
+  const [copyState, setCopyState] = useState<{ key: string; state: "copying" | "done" } | null>(null);
   const seen = useRef<Set<string>>(new Set());
+
+  // One click → load the 5 Salesforce fields into clipboard history, to paste
+  // each with Win+V. Ordered so Win+V (newest-first) reads down the SF form:
+  // First name, Last name, Title (always Director), Company, Phone.
+  async function copyForSalesforce(c: Incorp) {
+    const key = `${c.company_number}:${c.received_at}`;
+    // Oldest-first (First name written last → ends up on top of Win+V).
+    const ordered = [
+      fakeMobile(),
+      c.company_name || "",
+      "Director",
+      c.director_last_name || "",
+      c.director_first_name || "",
+    ];
+    setCopyState({ key, state: "copying" });
+    try {
+      await copyToClipboardHistory(ordered);
+      setCopyState({ key, state: "done" });
+      setTimeout(() => setCopyState((s) => (s?.key === key ? null : s)), 5000);
+    } catch {
+      setCopyState(null);
+    }
+  }
 
   // Live-update the "Xs ago" labels without touching the stream.
   useEffect(() => {
@@ -131,9 +173,26 @@ export default function NewIncorpsPage() {
                       </p>
                     )}
                   </div>
-                  <span className="shrink-0 whitespace-nowrap text-xs text-muted tabular-nums">
-                    {ago(c.received_at, now)}
-                  </span>
+                  <div className="flex shrink-0 flex-col items-end gap-1.5">
+                    <span className="whitespace-nowrap text-xs text-muted tabular-nums">
+                      {ago(c.received_at, now)}
+                    </span>
+                    {(() => {
+                      const key = `${c.company_number}:${c.received_at}`;
+                      const st = copyState?.key === key ? copyState.state : null;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => copyForSalesforce(c)}
+                          disabled={st === "copying"}
+                          title="Copies First name, Last name, Title (Director), Company and a placeholder phone as 5 separate items — paste each into Salesforce with Win+V"
+                          className="whitespace-nowrap rounded-md border border-border px-2.5 py-1 text-xs font-medium transition hover:border-brand hover:text-brand disabled:opacity-60"
+                        >
+                          {st === "copying" ? "Copying…" : st === "done" ? "✓ press Win+V" : "📋 Copy 5 for SF"}
+                        </button>
+                      );
+                    })()}
+                  </div>
                 </Card>
               </motion.li>
             ))}

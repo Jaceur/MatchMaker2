@@ -134,14 +134,6 @@ tick + fly-to-My-Pipeline animation; advance is **optimistic** (API call in back
   (copies bare domain to clipboard — user's work laptop blocks paste INTO the app, hence
   copy-buttons), one-at-a-time email vetting (most popular pattern first, ✓/✗, Mailmeteor link),
   CRM status, Save.
-- **"📋 Copy 5 for Salesforce"** (per director, added 2026-07-28) — loads First name, Last name,
-  Title ("Director"), Company and a placeholder phone into the **Windows clipboard history** as 5
-  separate entries, so the AE pastes each with **Win+V** (their SF is locked-down — no integration).
-  Written oldest-first with a **250ms gap between writes** (too fast and Windows collapses them into
-  one entry — tunable if a machine needs more), ordered so Win+V's newest-first list reads down the
-  SF form (First, Last, Title, Company, Phone). Phone is an **Ofcom reserved fictional mobile**
-  (`+447700900xxx`) — valid format, never a real line. All client-side in `ClassifyCard.tsx`
-  (`copyToClipboardHistory` / `fakeMobile`); depends on Windows "Clipboard history" being enabled.
 
 ## 5. Pipeline / scoring
 
@@ -442,7 +434,16 @@ A real-time feed of every new UK incorporation, **ephemeral by design** — no D
 **Flow:** `CHStream (separate Railway service) --POST per company--> API /new-incorps/ingest --in-memory fan-out--> API /new-incorps/stream (SSE) --> React /new-incorps page (rolling 25, newest on top)`.
 
 - **`api/routers/new_incorps.py`** — an in-process `_Broker` (a set of per-client `asyncio.Queue` + a `deque(maxlen=25)` ring buffer). `POST /ingest` (auth: `X-Ingest-Key` header == `NEW_INCORP_INGEST_KEY`, else 401/503) publishes; `GET /stream?token=<JWT>` is the SSE endpoint (EventSource can't send an Authorization header, so the JWT rides as a query param — the data is public CH records but the page is behind login). On connect it replays the current 25, then streams live. Heartbeat comment every 15s.
-- **Frontend** `(app)/new-incorps/page.tsx` — `EventSource` (auto-reconnects), prepends newest, caps at 25, de-dupes the buffer replay, animates with `motion`. Live "Xs ago" latency label. `API_BASE_URL` is now exported from `lib/api.ts` for the raw SSE URL.
+- **Frontend** `(app)/new-incorps/page.tsx` — `EventSource` (auto-reconnects), prepends newest, caps at 25, de-dupes the buffer replay, animates with `motion`. Live "Xs ago" latency label. `API_BASE_URL` is now exported from `lib/api.ts` for the raw SSE URL. Each tile shows CHStream's enrichment (director / capital / city / other-cos).
+- **"📋 Copy 5 for SF"** per tile (2026-07-28) — one click loads First name, Last name, Title
+  ("Director"), Company and a placeholder phone into the **Windows clipboard history** as 5 separate
+  entries, so the AE pastes each with **Win+V** (their Salesforce is locked-down — no integration).
+  Uses CHStream's `director_first_name`/`director_last_name` directly (no name-splitting needed).
+  Written oldest-first with a **250ms gap between writes** (too fast → Windows merges them into one
+  entry; tunable in `copyToClipboardHistory`), ordered so Win+V's newest-first list reads down the
+  SF form (First, Last, Title, Company, Phone). Phone is an **Ofcom reserved fictional mobile**
+  (`+447700900xxx`, via `fakeMobile`) — valid format, never a real line. Depends on Windows
+  "Clipboard history" being enabled.
 
 **Two deploy requirements — the page is blank until BOTH are done:**
 1. Set **`NEW_INCORP_INGEST_KEY`** on the API (Railway) service (any long random string). Empty = ingest returns 503.

@@ -21,31 +21,6 @@ const salesNavSearch = (name: string) =>
 const mailmeteor = (email: string) =>
   `https://mailmeteor.com/email-checker?email=${encodeURIComponent(email)}`;
 
-// A placeholder UK mobile in Ofcom's reserved fictional range (07700 900000–
-// 900999 → +447700900xxx). Valid format, guaranteed never a real person's line —
-// safe to drop into a Salesforce phone field that just needs to be non-empty.
-const fakeMobile = () =>
-  `+447700900${String(Math.floor(Math.random() * 1000)).padStart(3, "0")}`;
-
-// "First Surname" (surname may be multiple words) -> [first, last]. Names arrive
-// already normalised to this shape by the backend's _format_name.
-function splitName(full: string): [string, string] {
-  const [first, ...rest] = (full || "").trim().split(/\s+/);
-  return [first || "", rest.join(" ")];
-}
-
-// Write several values to the clipboard in sequence so each lands as its own
-// entry in the Windows clipboard history (Win+V). A short gap between writes is
-// required — too fast and Windows collapses them into one entry. Values are
-// given OLDEST-first; Win+V shows newest-first, so the caller orders them so the
-// first field it wants ends up on top.
-async function copyToClipboardHistory(values: string[]): Promise<void> {
-  for (const v of values) {
-    await navigator.clipboard.writeText(v);
-    await new Promise((r) => setTimeout(r, 250));
-  }
-}
-
 // One accepted/rejected step position per director.
 interface Step {
   idx: number;
@@ -75,8 +50,6 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
   const [saving, setSaving] = useState(false);
   const [reenriching, setReenriching] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copyingDir, setCopyingDir] = useState<string | null>(null);
-  const [copiedDir, setCopiedDir] = useState<string | null>(null);
 
   const loadEmails = useCallback(async () => {
     const data = await api.get<DirectorEmails[]>(`/pipeline/${lead.id}/email-candidates`);
@@ -113,26 +86,6 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
 
   function setStep(director: string, patch: Partial<Step>) {
     setSteps((s) => ({ ...s, [director]: { ...s[director], ...patch } }));
-  }
-
-  // Load the 5 Salesforce fields into the clipboard history in one click, so the
-  // AE can paste each with Win+V. Ordered so Win+V (newest-first) reads down the
-  // SF form: First name, Last name, Title (always Director), Company, Phone.
-  async function copyForSalesforce(directorName: string) {
-    const [first, last] = splitName(directorName);
-    // Oldest-first (First name written last → ends up on top of Win+V).
-    const ordered = [fakeMobile(), lead.company_name || "", "Director", last, first];
-    setError(null);
-    setCopyingDir(directorName);
-    try {
-      await copyToClipboardHistory(ordered);
-      setCopiedDir(directorName);
-      setTimeout(() => setCopiedDir((c) => (c === directorName ? null : c)), 5000);
-    } catch {
-      setError("Clipboard copy failed — keep this tab focused, and check Windows clipboard history is on.");
-    } finally {
-      setCopyingDir(null);
-    }
   }
 
   async function save() {
@@ -250,21 +203,6 @@ export function ClassifyCard({ lead, onDone }: { lead: Lead; onDone: () => void 
                       )}
                     </div>
                   </div>
-
-                  {/* One-click load of the 5 Salesforce fields into clipboard history */}
-                  <button
-                    type="button"
-                    onClick={() => copyForSalesforce(d.director_name)}
-                    disabled={copyingDir === d.director_name}
-                    title="Copies First name, Last name, Title (Director), Company and a placeholder phone as 5 separate items — paste each into Salesforce with Win+V"
-                    className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium transition hover:border-brand hover:text-brand disabled:opacity-60"
-                  >
-                    {copyingDir === d.director_name
-                      ? "Copying…"
-                      : copiedDir === d.director_name
-                        ? "✓ 5 copied — press Win+V"
-                        : "📋 Copy 5 for Salesforce"}
-                  </button>
 
                   {d.candidates.length === 0 ? (
                     <p className="mt-1 text-xs text-muted">No website domain — can&apos;t suggest emails.</p>
