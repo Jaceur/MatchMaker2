@@ -30,6 +30,9 @@ async def lifespan(app: FastAPI):
         print(f"SIC lookup loaded: {load_sic_lookup()} codes.")
     except Exception as e:
         print(f"SIC seed skipped: {e}")
+    # Seed the new-incorps claim set from the DB so claims survive a restart.
+    from .routers.new_incorps import load_claims_into_broker
+    load_claims_into_broker()
     yield
 
 

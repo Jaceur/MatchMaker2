@@ -70,10 +70,17 @@ export interface Incorp {
   sic_codes?: string[] | string | null;
   received_at: string; // server-stamped arrival time (ISO)
   city?: string | null;
+  postcode?: string | null;
   starting_capital?: number | string | null;
+  corporate_owner?: boolean | null;
+  owner_name?: string | null;
   director_first_name?: string | null;
   director_last_name?: string | null;
   director_other_companies?: number | string | null;
+  high_value?: boolean | null;
+  // Set once an AE copies/claims it — greyed out for everyone (server-broadcast).
+  claimed?: boolean | null;
+  claimed_by?: string | null;
   [key: string]: unknown;
 }
 

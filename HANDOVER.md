@@ -433,15 +433,32 @@ A real-time feed of every new UK incorporation, **ephemeral by design** — no D
 
 **Flow:** `CHStream (separate Railway service) --POST per company--> API /new-incorps/ingest --in-memory fan-out--> API /new-incorps/stream (SSE) --> React /new-incorps page (rolling 25, newest on top)`.
 
-- **`api/routers/new_incorps.py`** — an in-process `_Broker` (a set of per-client `asyncio.Queue` + a `deque(maxlen=25)` ring buffer). `POST /ingest` (auth: `X-Ingest-Key` header == `NEW_INCORP_INGEST_KEY`, else 401/503) publishes; `GET /stream?token=<JWT>` is the SSE endpoint (EventSource can't send an Authorization header, so the JWT rides as a query param — the data is public CH records but the page is behind login). On connect it replays the current 25, then streams live. Heartbeat comment every 15s.
-- **Frontend** `(app)/new-incorps/page.tsx` — `EventSource` (auto-reconnects), prepends newest, caps at 25, de-dupes the buffer replay, animates with `motion`. Live "Xs ago" latency label. `API_BASE_URL` is now exported from `lib/api.ts` for the raw SSE URL. Each tile shows CHStream's enrichment (director / capital / city / other-cos).
-- **"📋 Copy 5 for SF"** per tile (2026-07-28) — one click loads First name, Last name, Title
-  ("Director"), Company and a placeholder phone into the **Windows clipboard history** as 5 separate
-  entries, so the AE pastes each with **Win+V** (their Salesforce is locked-down — no integration).
-  Uses CHStream's `director_first_name`/`director_last_name` directly (no name-splitting needed).
-  Written oldest-first with a **250ms gap between writes** (too fast → Windows merges them into one
-  entry; tunable in `copyToClipboardHistory`), ordered so Win+V's newest-first list reads down the
-  SF form (First, Last, Title, Company, Phone). Phone is an **Ofcom reserved fictional mobile**
+- **`api/routers/new_incorps.py`** — an in-process `_Broker` with **two channels** (`all`,
+  `high_value`), each a per-client `asyncio.Queue` set + a `deque(maxlen=25)` buffer, plus a
+  **DB-backed claim set**. `POST /ingest` (auth: `X-Ingest-Key`) computes `high_value` and publishes
+  to `all` (+ `high_value` if it qualifies); `GET /stream?channel=all|high_value&token=<JWT>` is the
+  SSE endpoint (JWT as a query param — EventSource can't set headers; data is public CH records, page
+  is behind login). Replays the current 25 (with live claim status) then streams. Heartbeat every 15s.
+- **High-Value channel** — a lead qualifies on ANY of: `starting_capital > £50k`, `corporate_owner`,
+  or a **London Zone-1 postcode** (`is_zone1`: outward codes EC*, WC*, W1, SW1, SE1, NW1, N1, E1 —
+  district-number guarded so W1≠W10, N1≠N10, E1≠E14). Criteria live in the API (`is_high_value`), not
+  CHStream, so they're tunable without redeploying the stream worker.
+- **Claims (copy = claim, added 2026-07-28)** — `POST /claim` (JWT) persists the lead to
+  **`new_incorp_claims`** (company_number PK, full `lead` JSONB, `claimed_by`, `claimed_at`; first
+  claim wins via `on_conflict_do_nothing`) AND broadcasts a **named `claim` SSE event** to every
+  client/channel → the tile greys out **for everyone**, durably (claim set is seeded from the DB at
+  API startup by `load_claims_into_broker`, so it survives restarts and greys for late joiners too).
+- **Frontend** — `IncorpStream.tsx` is the shared component (`channel` prop); `(app)/new-incorps/page.tsx`
+  (`all`) and `(app)/new-incorps/high-value/page.tsx` (`high_value`) are thin wrappers; "High-value" is
+  a **submenu** under New Incorps in `AppShell`. `EventSource` handles both the default incorp message
+  and the `claim` event; claimed tiles render greyed + "🔒 taken". `API_BASE_URL` exported from
+  `lib/api.ts`. Tiles show CHStream's enrichment (director / capital / corporate owner / city / other-cos).
+- **"📋 Copy 5 & claim"** per tile — one click (a) loads First name, Last name, Title ("Director"),
+  Company and a placeholder phone into the **Windows clipboard history** as 5 separate entries to
+  paste with **Win+V** (Salesforce is locked-down — no integration), and (b) **claims** the lead
+  (greys it everywhere + stores it). 250ms gap between writes (too fast → Windows merges them;
+  tunable in `copyToClipboardHistory`), ordered so Win+V (newest-first) reads down the SF form
+  (First, Last, Title, Company, Phone). Phone is an **Ofcom reserved fictional mobile**
   (`+447700900xxx`, via `fakeMobile`) — valid format, never a real line. Depends on Windows
   "Clipboard history" being enabled.
 
@@ -455,12 +472,16 @@ A real-time feed of every new UK incorporation, **ephemeral by design** — no D
    the entry file without also changing that Railway setting.) It needs its OWN two env vars: `MATCHMAKER_INGEST_URL` (the `…/new-incorps/ingest`
    URL) and `NEW_INCORP_INGEST_KEY` (same value as the API service). It POSTs a RICHER payload than
    the bare schema — `{company_number, company_name, date_of_creation, sic_codes}` **plus** CHStream's
-   enrichment: `city`, `starting_capital`, `director_first_name/last_name/residence/dob`,
-   `director_other_companies`. The ingest schema only *requires* `company_number`; the rest rides
-   through `extra="allow"` to the SSE event, and the page shows director/capital/city/other-cos.
+   enrichment: `city`, **`postcode`**, `starting_capital`, **`corporate_owner`**, **`owner_name`**,
+   `director_first_name/last_name/residence/dob`, `director_other_companies`. (`postcode` drives the
+   Zone-1 filter; `corporate_owner`/`owner_name` come from a corporate PSC — and CHStream still falls
+   through to a director's name for a corporate-owned company, for the copy-to-SF.) The ingest schema
+   only *requires* `company_number`; the rest rides through `extra="allow"`.
    A `401`/`503` in CHStream's logs = key missing or mismatched between the two services.
 
 **Gotchas / limits:**
 - **Single API instance only.** The broker is in-process, so ingest and every SSE client must share one process. Today that's true (one Railway API service). Scaling the API to >1 instance breaks the fan-out — you'd need Redis pub/sub or similar.
-- **Unfiltered** ("show everyone") for the first test — that's ~1,500–2,500/day, so the 25-window churns fast. Filtering to the good ones (CHStream's scored/Tier-1-2) is the agreed next step.
+- The **`all` channel is unfiltered** (~1,500–2,500/day, so its 25-window churns fast); the
+  **`high_value` channel** is the filtered view (capital/corporate/Zone-1). More filters can be added
+  in `is_high_value` (a settings-driven capital threshold would be the natural next tunable).
 - The `ch_*` tables + the old score-ranked page are **not** involved here; this is a fresh, storage-free path. If you want the tiered/scored/send-to-swipe view too, that's the old `new_incorps_page.py` design (git history), a separate build.

@@ -9,6 +9,7 @@ interface NavItem {
   label: string;
   icon: string;
   adminOnly?: boolean;
+  children?: NavItem[];
 }
 
 const NAV: NavItem[] = [
@@ -16,7 +17,10 @@ const NAV: NavItem[] = [
   { href: "/pipeline", label: "My Pipeline", icon: "🚀" },
   { href: "/dashboard", label: "Dashboard", icon: "📊" },
   { href: "/leaderboard", label: "Leaderboard", icon: "🏆" },
-  { href: "/new-incorps", label: "New Incorps", icon: "✨" },
+  {
+    href: "/new-incorps", label: "New Incorps", icon: "✨",
+    children: [{ href: "/new-incorps/high-value", label: "High-value", icon: "💎" }],
+  },
   { href: "/analytics", label: "Analytics", icon: "📈", adminOnly: true },
   { href: "/admin", label: "Admin", icon: "⚙️", adminOnly: true },
 ];
@@ -44,18 +48,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <nav className="flex gap-1 overflow-x-auto px-2 py-2 md:flex-col md:overflow-visible md:py-3">
           {items.map((item) => {
-            const active = pathname === item.href || pathname.startsWith(item.href + "/");
+            const sectionActive = pathname === item.href || pathname.startsWith(item.href + "/");
+            const link = (it: NavItem, sub = false) => {
+              const active = pathname === it.href || pathname.startsWith(it.href + "/");
+              return (
+                <Link
+                  key={it.href}
+                  href={it.href}
+                  data-nav={it.href}
+                  className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg py-2 text-sm font-medium transition
+                    ${sub ? "px-3 md:pl-9 text-xs" : "px-3"}
+                    ${active ? "bg-brand/10 text-brand" : "text-muted hover:bg-surface-2 hover:text-foreground"}`}
+                >
+                  <span>{it.icon}</span>
+                  {it.label}
+                </Link>
+              );
+            };
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                data-nav={item.href}
-                className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition
-                  ${active ? "bg-brand/10 text-brand" : "text-muted hover:bg-surface-2 hover:text-foreground"}`}
-              >
-                <span>{item.icon}</span>
-                {item.label}
-              </Link>
+              <div key={item.href} className="contents md:block">
+                {link(item)}
+                {/* Sub-items appear once you're in that section. */}
+                {item.children && sectionActive && item.children.map((child) => link(child, true))}
+              </div>
             );
           })}
         </nav>

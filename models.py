@@ -286,6 +286,24 @@ app_settings = Table(
 )
 
 # ==========================================
+# NEW-INCORP CLAIMS
+# ==========================================
+# When an AE copies a company from the live new-incorps stream (regular or
+# High-Value), it's CLAIMED: greyed out for everyone so no one double-works it,
+# and persisted here "for later reasons". The stream itself stays ephemeral —
+# only claimed leads are stored. company_number is the natural key: first claim
+# wins (on_conflict_do_nothing). `lead` keeps the whole streamed payload.
+# New table, so create_all builds it.
+new_incorp_claims = Table(
+    'new_incorp_claims', metadata,
+    Column('company_number', String(20), primary_key=True),
+    Column('company_name', String(255)),
+    Column('claimed_by', String(100)),
+    Column('claimed_at', DateTime, default=datetime.utcnow, index=True),
+    Column('lead', JSONB),
+)
+
+# ==========================================
 # SCREENING LOG (ML training data)
 # ==========================================
 # One row per lead the staged pipeline processes: the features the score was
