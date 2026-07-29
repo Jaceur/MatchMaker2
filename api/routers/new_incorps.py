@@ -25,7 +25,7 @@ import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
@@ -213,6 +213,76 @@ async def claim(body: ClaimIn, user: CurrentUser = Depends(get_current_user)):
     owner = owner or user.username
     broker.register_claim(body.company_number, owner)
     return {"ok": True, "claimed_by": owner, "already": owner != user.username}
+
+
+# ---------------------------------------------------------------------------
+# The claimer's outreach pipeline (small — there will be a LOT of these)
+# ---------------------------------------------------------------------------
+class StepUpdate(BaseModel):
+    step: str            # e.g. "connection_request" | "inmail" | "follow_up"
+    value: bool
+
+
+class ArchiveIn(BaseModel):
+    outcome: str         # "success" | "removed"
+
+
+@router.get("/pipeline")
+def pipeline(user: CurrentUser = Depends(get_current_user)) -> list[dict]:
+    """This AE's ACTIVE claimed incorps (not yet archived), newest first."""
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(new_incorp_claims)
+            .where(new_incorp_claims.c.claimed_by == user.username)
+            .where(new_incorp_claims.c.outcome.is_(None))
+            .order_by(new_incorp_claims.c.claimed_at.desc())
+        ).mappings().fetchall()
+    return [dict(r) for r in rows]
+
+
+def _owned_claim(conn, company_number: str, username: str):
+    """Fetch a still-active claim that belongs to this AE, or raise 404/403."""
+    row = conn.execute(
+        select(new_incorp_claims).where(new_incorp_claims.c.company_number == company_number)
+    ).mappings().fetchone()
+    if not row or row["outcome"] is not None:
+        raise HTTPException(status_code=404, detail="Not in your pipeline.")
+    if row["claimed_by"] != username:
+        raise HTTPException(status_code=403, detail="Not your lead.")
+    return row
+
+
+@router.post("/pipeline/{company_number}/step")
+def set_step(company_number: str, body: StepUpdate, user: CurrentUser = Depends(get_current_user)) -> dict:
+    """Tick/untick one outreach step. Steps are a free-form bool map so the set
+    can grow later without a schema change."""
+    with engine.begin() as conn:
+        row = _owned_claim(conn, company_number, user.username)
+        steps = dict(row["steps"] or {})
+        steps[body.step] = body.value
+        conn.execute(
+            update(new_incorp_claims)
+            .where(new_incorp_claims.c.company_number == company_number)
+            .values(steps=steps)
+        )
+    return {"steps": steps}
+
+
+@router.post("/pipeline/{company_number}/archive")
+def archive(company_number: str, body: ArchiveIn, user: CurrentUser = Depends(get_current_user)) -> dict:
+    """Success or Remove: archive the lead (it leaves the pipeline; the row stays
+    in the DB tagged with the outcome). The claim itself persists, so the company
+    stays greyed on the stream — it won't be re-picked."""
+    if body.outcome not in ("success", "removed"):
+        raise HTTPException(status_code=400, detail="outcome must be 'success' or 'removed'.")
+    with engine.begin() as conn:
+        _owned_claim(conn, company_number, user.username)
+        conn.execute(
+            update(new_incorp_claims)
+            .where(new_incorp_claims.c.company_number == company_number)
+            .values(outcome=body.outcome, archived_at=datetime.utcnow())
+        )
+    return {"ok": True, "outcome": body.outcome}
 
 
 def _valid_token(token: str) -> bool:

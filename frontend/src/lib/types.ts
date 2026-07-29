@@ -61,6 +61,15 @@ export interface SourceCandidate {
   score: number;
 }
 
+// A claimed new-incorp in the AE's outreach pipeline (from new_incorp_claims).
+export interface ClaimedLead {
+  company_number: string;
+  company_name: string | null;
+  claimed_at: string;
+  steps: Record<string, boolean> | null;
+  lead: Incorp | null;
+}
+
 // One company off the live new-incorporations stream (SSE). Ephemeral — never stored.
 // CHStream enriches each with director / capital / city (best-effort; may be absent).
 export interface Incorp {

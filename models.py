@@ -301,6 +301,13 @@ new_incorp_claims = Table(
     Column('claimed_by', String(100)),
     Column('claimed_at', DateTime, default=datetime.utcnow, index=True),
     Column('lead', JSONB),
+    # The claimer's outreach pipeline: tickable step state (JSONB, e.g.
+    # {"connection_request": true, "inmail": false, "follow_up": false}) and the
+    # terminal outcome. outcome NULL = still in the pipeline; 'success'/'removed'
+    # = archived (disappears from the pipeline, kept in the DB with the tag).
+    Column('steps', JSONB, default=dict),
+    Column('outcome', String(20)),
+    Column('archived_at', DateTime),
 )
 
 # ==========================================
@@ -644,6 +651,18 @@ try:
 except Exception as _e:
     print(f"sic_lookup migration skipped: {_e}")
 
+# new_incorp_claims gained the pipeline columns (steps/outcome/archived_at) after
+# the table was already created by an earlier deploy — add them idempotently.
+try:
+    with engine.begin() as _conn:
+        for _col, _type in (("steps", "JSONB"), ("outcome", "VARCHAR(20)"),
+                            ("archived_at", "TIMESTAMP")):
+            _conn.execute(text(
+                f"ALTER TABLE new_incorp_claims ADD COLUMN IF NOT EXISTS {_col} {_type}"
+            ))
+except Exception as _e:
+    print(f"new_incorp_claims migration skipped: {_e}")
+
 # Indexes for the columns the latency-sensitive queries filter and sort by: the
 # swipe queue (get_pending_leads) and lead allocation (top_up_allocation) both
 # filter on status + assigned_ae_username and order by score, none of
@@ -654,6 +673,10 @@ except Exception as _e:
 _INDEXES = {
     "ix_sales_leads_status_ae_score":
         "sales_leads (status, assigned_ae_username, confidence_score)",
+    # The new-incorp pipeline query filters by claimer + active (outcome IS NULL);
+    # there will be a LOT of claim rows, so index the lookup.
+    "ix_claims_by_active":
+        "new_incorp_claims (claimed_by, outcome)",
 }
 try:
     with engine.begin() as _conn:

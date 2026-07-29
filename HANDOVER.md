@@ -449,10 +449,19 @@ A real-time feed of every new UK incorporation, **ephemeral by design** — no D
   client/channel → the tile greys out **for everyone**, durably (claim set is seeded from the DB at
   API startup by `load_claims_into_broker`, so it survives restarts and greys for late joiners too).
 - **Frontend** — `IncorpStream.tsx` is the shared component (`channel` prop); `(app)/new-incorps/page.tsx`
-  (`all`) and `(app)/new-incorps/high-value/page.tsx` (`high_value`) are thin wrappers; "High-value" is
-  a **submenu** under New Incorps in `AppShell`. `EventSource` handles both the default incorp message
-  and the `claim` event; claimed tiles render greyed + "🔒 taken". `API_BASE_URL` exported from
-  `lib/api.ts`. Tiles show CHStream's enrichment (director / capital / corporate owner / city / other-cos).
+  (`all`) and `(app)/new-incorps/high-value/page.tsx` (`high_value`) are thin wrappers; "High-value" +
+  "My pipeline" are **submenus** under New Incorps in `AppShell`. `EventSource` handles both the default
+  incorp message and the `claim` event; claimed tiles render greyed + "🔒 taken". `API_BASE_URL` exported
+  from `lib/api.ts`. Tiles show CHStream's enrichment (director / capital / corporate owner / city / other-cos).
+- **Per-AE outreach pipeline (2026-07-29)** — claiming a lead puts it in the claimer's pipeline
+  (`(app)/new-incorps/pipeline/page.tsx`, submenu "My pipeline"). `new_incorp_claims` gained
+  `steps` JSONB (free-form bool map so the step set can grow — currently `connection_request`,
+  `inmail`, `follow_up`), `outcome` (`success`/`removed`/NULL) and `archived_at`. Endpoints (all
+  JWT + owner-checked): `GET /pipeline` (this AE's active claims, `outcome IS NULL`),
+  `POST /pipeline/{cn}/step` (tick a step), `POST /pipeline/{cn}/archive` (Success or Remove → sets
+  `outcome`+`archived_at`, drops it from the pipeline; the row stays in the DB tagged, and the claim
+  persists so the company stays greyed on the stream). Indexed `(claimed_by, outcome)` — there will
+  be a lot of rows. Tiles are compact (name + director + LinkedIn search + 3 checkboxes + Success/Remove).
 - **"📋 Copy 5 & claim"** per tile — one click (a) loads First name, Last name, Title ("Director"),
   Company and a placeholder phone into the **Windows clipboard history** as 5 separate entries to
   paste with **Win+V** (Salesforce is locked-down — no integration), and (b) **claims** the lead

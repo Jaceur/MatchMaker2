@@ -19,7 +19,10 @@ const NAV: NavItem[] = [
   { href: "/leaderboard", label: "Leaderboard", icon: "🏆" },
   {
     href: "/new-incorps", label: "New Incorps", icon: "✨",
-    children: [{ href: "/new-incorps/high-value", label: "High-value", icon: "💎" }],
+    children: [
+      { href: "/new-incorps/high-value", label: "High-value", icon: "💎" },
+      { href: "/new-incorps/pipeline", label: "My pipeline", icon: "📋" },
+    ],
   },
   { href: "/analytics", label: "Analytics", icon: "📈", adminOnly: true },
   { href: "/admin", label: "Admin", icon: "⚙️", adminOnly: true },
