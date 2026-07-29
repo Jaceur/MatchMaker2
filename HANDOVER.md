@@ -439,7 +439,7 @@ A real-time feed of every new UK incorporation, **ephemeral by design** — no D
   to `all` (+ `high_value` if it qualifies); `GET /stream?channel=all|high_value&token=<JWT>` is the
   SSE endpoint (JWT as a query param — EventSource can't set headers; data is public CH records, page
   is behind login). Replays the current 25 (with live claim status) then streams. Heartbeat every 15s.
-- **High-Value channel** — a lead qualifies on ANY of: `starting_capital > £50k`, `corporate_owner`,
+- **High-Value channel** — a lead qualifies on ANY of: `starting_capital > £25k`, `corporate_owner`,
   or a **London Zone-1 postcode** (`is_zone1`: outward codes EC*, WC*, W1, SW1, SE1, NW1, N1, E1 —
   district-number guarded so W1≠W10, N1≠N10, E1≠E14). Criteria live in the API (`is_high_value`), not
   CHStream, so they're tunable without redeploying the stream worker.

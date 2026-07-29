@@ -58,7 +58,7 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
   const [items, setItems] = useState<Incorp[]>([]);
   const [status, setStatus] = useState<Status>("connecting");
   const [now, setNow] = useState(() => Date.now());
-  const [copyingKey, setCopyingKey] = useState<string | null>(null);
+  const [copying, setCopying] = useState<{ key: string; kind: "sf" | "li" } | null>(null);
   // company_number -> claimed_by, applied across the whole list (grey-out).
   const [claims, setClaims] = useState<Record<string, string>>({});
   const seen = useRef<Set<string>>(new Set());
@@ -96,30 +96,45 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
     return () => es.close();
   }, [channel]);
 
+  // Claiming: persists the lead + greys it for everyone (incl. this page, via the
+  // broadcast we also receive). Optimistically mark it now.
+  function claimLead(c: Incorp) {
+    setClaims((m) => ({ ...m, [c.company_number]: m[c.company_number] || "you" }));
+    api.post("/new-incorps/claim", c).catch(() => { /* best-effort */ });
+  }
+
+  // 5 fields for a Salesforce record, one per Win+V entry (First, Last, Title,
+  // Company, Phone reading down).
   async function copyForSalesforce(c: Incorp) {
-    const k = keyOf(c);
     const ordered = [
       fakeMobile(), c.company_name || "", "Director",
       c.director_last_name || "", c.director_first_name || "",
     ];
-    setCopyingKey(k);
+    await runCopy(c, "sf", ordered);
+  }
+
+  // 2 entries for LinkedIn: the full name (top of Win+V), then company below it.
+  async function copyForLinkedIn(c: Incorp) {
+    const name = [c.director_first_name, c.director_last_name].filter(Boolean).join(" ").trim();
+    await runCopy(c, "li", [c.company_name || "", name]); // company written first → name on top
+  }
+
+  async function runCopy(c: Incorp, kind: "sf" | "li", ordered: string[]) {
+    setCopying({ key: keyOf(c), kind });
     try {
       await copyToClipboardHistory(ordered);
-      // Claiming: persists the lead + greys it for everyone (incl. this page,
-      // via the broadcast we'll also receive). Optimistically mark it now.
-      setClaims((m) => ({ ...m, [c.company_number]: m[c.company_number] || "you" }));
-      api.post("/new-incorps/claim", c).catch(() => { /* best-effort */ });
+      claimLead(c);
     } catch {
       /* clipboard blocked — leave unclaimed */
     } finally {
-      setCopyingKey(null);
+      setCopying(null);
     }
   }
 
   const dot = status === "live" ? "bg-success" : status === "reconnecting" ? "bg-warning" : "bg-muted";
   const heading = channel === "high_value" ? "💎 High-value incorporations — live" : "✨ New incorporations — live";
   const blurb = channel === "high_value"
-    ? "Capital > £50k, corporate-owned, or a London Zone-1 postcode. Newest on top, 25 max."
+    ? "Capital > £25k, corporate-owned, or a London Zone-1 postcode. Newest on top, 25 max."
     : "Every UK company as it's registered. Newest on top; 25 most recent only. Nothing is saved.";
 
   return (
@@ -145,7 +160,7 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
             {items.map((c) => {
               const k = keyOf(c);
               const claimedBy = claims[c.company_number];
-              const copying = copyingKey === k;
+              const busy = copying?.key === k;
               return (
                 <motion.li
                   key={k}
@@ -180,15 +195,26 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
                           🔒 taken{claimedBy !== "you" ? ` — ${claimedBy}` : ""}
                         </span>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => copyForSalesforce(c)}
-                          disabled={copying}
-                          title="Copies 5 fields to clipboard history (Win+V) and claims this lead so no one else works it"
-                          className="whitespace-nowrap rounded-md border border-border px-2.5 py-1 text-xs font-medium transition hover:border-brand hover:text-brand disabled:opacity-60"
-                        >
-                          {copying ? "Copying…" : "📋 Copy 5 & claim"}
-                        </button>
+                        <div className="flex flex-col items-stretch gap-1">
+                          <button
+                            type="button"
+                            onClick={() => copyForSalesforce(c)}
+                            disabled={busy}
+                            title="Copies 5 fields to clipboard history (Win+V) and claims this lead so no one else works it"
+                            className="whitespace-nowrap rounded-md border border-border px-2.5 py-1 text-xs font-medium transition hover:border-brand hover:text-brand disabled:opacity-60"
+                          >
+                            {busy && copying?.kind === "sf" ? "Copying…" : "📋 Copy 5 & claim"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => copyForLinkedIn(c)}
+                            disabled={busy}
+                            title="Copies the full name + company to clipboard history (Win+V) and claims this lead"
+                            className="whitespace-nowrap rounded-md border border-border px-2.5 py-1 text-xs font-medium transition hover:border-brand hover:text-brand disabled:opacity-60"
+                          >
+                            {busy && copying?.kind === "li" ? "Copying…" : "🔗 Copy LI & claim"}
+                          </button>
+                        </div>
                       )}
                     </div>
                   </Card>

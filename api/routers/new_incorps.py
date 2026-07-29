@@ -3,7 +3,7 @@
 CHStream POSTs each new company to `/new-incorps/ingest`; browsers hold an SSE
 connection to `/new-incorps/stream?channel=all|high_value` and show the newest
 25, oldest falling off. The **High-Value** channel only carries leads meeting one
-of: starting capital > £50k, corporate ownership, or a London Zone-1 postcode.
+of: starting capital > £25k, corporate ownership, or a London Zone-1 postcode.
 
 The stream is ephemeral (in-memory ring buffer per channel). The exception is a
 CLAIM: when an AE copies a company, the browser calls `/claim` — it's stored in
@@ -41,7 +41,7 @@ _HEARTBEAT_SECONDS = 15
 CHANNELS = ("all", "high_value")
 
 # ---- High-Value criteria (any one qualifies) ----
-CAPITAL_THRESHOLD = 50_000       # starting capital strictly ABOVE this
+CAPITAL_THRESHOLD = 25_000       # starting capital strictly ABOVE this
 # London Zone-1 postcode OUTWARD codes (broad-central set, confirmed with the
 # user): EC*, WC*, W1, SW1, SE1, NW1, N1, E1. The patterns exclude neighbours by
 # district number — W1 but not W10, N1 but not N10, E1 but not E14, etc.
@@ -64,7 +64,7 @@ def is_zone1(postcode) -> bool:
 
 
 def is_high_value(event: dict) -> bool:
-    """Any one of: capital > £50k, corporate owner, or a Zone-1 postcode."""
+    """Any one of: capital > £25k, corporate owner, or a Zone-1 postcode."""
     cap = event.get("starting_capital")
     try:
         cap_ok = cap is not None and cap != "" and float(cap) > CAPITAL_THRESHOLD

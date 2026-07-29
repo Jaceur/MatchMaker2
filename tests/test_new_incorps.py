@@ -38,7 +38,7 @@ def test_zone1_excludes_neighbours_and_junk(pc):
 
 
 def test_high_value_is_any_one_criterion():
-    assert is_high_value({"starting_capital": 60000}) is True          # > £50k
+    assert is_high_value({"starting_capital": 30000}) is True          # > £25k
     assert is_high_value({"corporate_owner": True}) is True            # corporate
     assert is_high_value({"postcode": "EC1V 0AA"}) is True             # zone 1
     # none of them:
@@ -46,8 +46,8 @@ def test_high_value_is_any_one_criterion():
 
 
 def test_capital_threshold_is_strictly_above():
-    assert is_high_value({"starting_capital": 50000}) is False
-    assert is_high_value({"starting_capital": 50001}) is True
+    assert is_high_value({"starting_capital": 25000}) is False
+    assert is_high_value({"starting_capital": 25001}) is True
 
 
 def test_capital_empty_or_garbage_is_safe():
