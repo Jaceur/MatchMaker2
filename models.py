@@ -303,11 +303,36 @@ new_incorp_claims = Table(
     Column('lead', JSONB),
     # The claimer's outreach pipeline: tickable step state (JSONB, e.g.
     # {"connection_request": true, "inmail": false, "follow_up": false}) and the
-    # terminal outcome. outcome NULL = still in the pipeline; 'success'/'removed'
-    # = archived (disappears from the pipeline, kept in the DB with the tag).
+    # terminal outcome. outcome NULL = still in the pipeline; 'success'/'removed'/
+    # 'already_claimed' = archived (out of the pipeline, kept in the DB tagged).
     Column('steps', JSONB, default=dict),
     Column('outcome', String(20)),
     Column('archived_at', DateTime),
+    # How it was claimed: 'copy' (Copy & Claim → enters the pipeline) or 'already'
+    # (the archive's "Already Claimed" button → greyed but skips the pipeline).
+    Column('via', String(20)),
+)
+
+# ==========================================
+# HIGH-VALUE INCORP ARCHIVE
+# ==========================================
+# Every HIGH-VALUE incorporation is persisted here as it streams (claimed or
+# not), so the archive page can load a day's worth by date — the live stream is
+# ephemeral and these are worth keeping. company_number is the natural key
+# (re-streams upsert). Denormalised columns feed the table + the date filter;
+# `lead` keeps the whole payload (for Copy-5). New table → create_all builds it.
+high_value_incorps = Table(
+    'high_value_incorps', metadata,
+    Column('company_number', String(20), primary_key=True),
+    Column('company_name', String(255)),
+    Column('sic_codes', String(255)),
+    Column('starting_capital', BigInteger),
+    Column('corporate_owner', Boolean),
+    Column('owner_name', String(255)),
+    Column('city', String(255)),
+    Column('date_of_creation', Date, index=True),   # the archive's date picker
+    Column('received_at', DateTime),
+    Column('lead', JSONB),
 )
 
 # ==========================================
@@ -656,7 +681,7 @@ except Exception as _e:
 try:
     with engine.begin() as _conn:
         for _col, _type in (("steps", "JSONB"), ("outcome", "VARCHAR(20)"),
-                            ("archived_at", "TIMESTAMP")):
+                            ("archived_at", "TIMESTAMP"), ("via", "VARCHAR(20)")):
             _conn.execute(text(
                 f"ALTER TABLE new_incorp_claims ADD COLUMN IF NOT EXISTS {_col} {_type}"
             ))

@@ -70,6 +70,19 @@ export interface ClaimedLead {
   lead: Incorp | null;
 }
 
+// A row in the High-Value Archive (from high_value_incorps ⋈ claim status).
+export interface ArchiveIncorp {
+  company_number: string;
+  company_name: string | null;
+  sic_codes: string | null;
+  starting_capital: number | null;
+  corporate_owner: boolean | null;
+  city: string | null;
+  date_of_creation: string | null;
+  lead: Incorp | null;        // full payload — Copy-5 needs the director names
+  claimed_by: string | null;  // null = free to claim
+}
+
 // One company off the live new-incorporations stream (SSE). Ephemeral — never stored.
 // CHStream enriches each with director / capital / city (best-effort; may be absent).
 export interface Incorp {

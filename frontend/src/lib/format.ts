@@ -64,6 +64,12 @@ export function directorList(v?: string | null): string[] {
   return v.split(",").map((d) => d.trim()).filter(Boolean);
 }
 
+// The public Companies House record for a company number.
+export function companiesHouseUrl(companyNumber?: string | null): string | null {
+  if (!companyNumber) return null;
+  return `https://find-and-update.company-information.service.gov.uk/company/${encodeURIComponent(companyNumber)}`;
+}
+
 // "https://www.acme.co.uk/about" -> "acme.co.uk" (for the Business Search).
 export function bareDomain(url?: string | null): string {
   if (!url) return "";

@@ -25,11 +25,13 @@ import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from datetime import date as _date
+
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
-from models import new_incorp_claims
+from models import new_incorp_claims, high_value_incorps
 from ..config import settings
 from ..security import get_current_user, CurrentUser
 
@@ -161,12 +163,54 @@ class ClaimIn(BaseModel):
     model_config = {"extra": "allow"}
     company_number: str
     company_name: str | None = None
+    # True = the archive's "Already Claimed" button: grey it out but DON'T put it
+    # in the clicker's pipeline (it's handled elsewhere).
+    already: bool = False
 
 
 def _sse(kind: str, data: dict) -> str:
     if kind == "claim":
         return f"event: claim\ndata: {json.dumps(data, default=str)}\n\n"
     return f"data: {json.dumps(data, default=str)}\n\n"
+
+
+def _as_int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_date(v):
+    try:
+        return _date.fromisoformat(str(v)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _persist_high_value(event: dict) -> None:
+    """Store a high-value incorp in the durable archive (first-seen snapshot;
+    re-streams are ignored). Never lets a DB hiccup break ingest."""
+    sic = event.get("sic_codes")
+    sic_str = ", ".join(sic) if isinstance(sic, list) else (sic or None)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                pg_insert(high_value_incorps).values(
+                    company_number=event["company_number"],
+                    company_name=event.get("company_name"),
+                    sic_codes=sic_str,
+                    starting_capital=_as_int(event.get("starting_capital")),
+                    corporate_owner=bool(event.get("corporate_owner")),
+                    owner_name=event.get("owner_name"),
+                    city=event.get("city"),
+                    date_of_creation=_as_date(event.get("date_of_creation")),
+                    received_at=datetime.utcnow(),
+                    lead=event,
+                ).on_conflict_do_nothing(index_elements=["company_number"])
+            )
+    except Exception as e:
+        print(f"new-incorps: archive persist failed for {event.get('company_number')} ({e})")
 
 
 @router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)
@@ -179,15 +223,18 @@ async def ingest(body: IncorpIn, x_ingest_key: str = Header(default="")):
     event = body.model_dump()
     event["received_at"] = datetime.now(timezone.utc).isoformat()
     event["high_value"] = is_high_value(event)
-    listeners = broker.publish_incorp(event)
+    listeners = broker.publish_incorp(event)          # fast, in-memory — do first
+    if event["high_value"]:
+        _persist_high_value(event)                    # then archive (doesn't delay the stream)
     return {"ok": True, "listeners": listeners, "high_value": event["high_value"]}
 
 
 @router.post("/claim", status_code=status.HTTP_200_OK)
 async def claim(body: ClaimIn, user: CurrentUser = Depends(get_current_user)):
-    """An AE claimed a lead (copied it). Persist it (first claim wins) and
-    broadcast so every open page greys it out. Returns who owns it."""
-    lead = body.model_dump()
+    """An AE claimed a lead. Persist it (first claim wins) and broadcast so every
+    open page greys it out. `already=True` (the archive's "Already Claimed") greys
+    it but skips the pipeline (stored with outcome='already_claimed')."""
+    lead = body.model_dump(exclude={"already"})
     existing = broker.is_claimed(body.company_number)
     if existing:
         return {"ok": True, "claimed_by": existing, "already": True}
@@ -201,10 +248,14 @@ async def claim(body: ClaimIn, user: CurrentUser = Depends(get_current_user)):
                 claimed_by=user.username,
                 claimed_at=datetime.utcnow(),
                 lead=lead,
+                via="already" if body.already else "copy",
+                # "Already claimed" is archived on the spot so it never enters the
+                # pipeline; a normal claim starts active (outcome NULL).
+                outcome="already_claimed" if body.already else None,
+                archived_at=datetime.utcnow() if body.already else None,
             )
             .on_conflict_do_nothing(index_elements=["company_number"])
         )
-        # Read back the actual owner (handles a race where another AE won).
         owner = conn.execute(
             select(new_incorp_claims.c.claimed_by)
             .where(new_incorp_claims.c.company_number == body.company_number)
@@ -213,6 +264,27 @@ async def claim(body: ClaimIn, user: CurrentUser = Depends(get_current_user)):
     owner = owner or user.username
     broker.register_claim(body.company_number, owner)
     return {"ok": True, "claimed_by": owner, "already": owner != user.username}
+
+
+@router.get("/archive")
+def archive_by_date(date: str, user: CurrentUser = Depends(get_current_user)) -> list[dict]:
+    """High-value incorps incorporated on `date` (YYYY-MM-DD), highest capital
+    first, each with its current claim status so the table can grey taken ones."""
+    d = _as_date(date)
+    if d is None:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT h.company_number, h.company_name, h.sic_codes, h.starting_capital,
+                   h.corporate_owner, h.city, h.date_of_creation, h.lead,
+                   c.claimed_by
+            FROM high_value_incorps h
+            LEFT JOIN new_incorp_claims c ON c.company_number = h.company_number
+            WHERE h.date_of_creation = :d
+            ORDER BY h.starting_capital DESC NULLS LAST, h.received_at DESC
+            LIMIT 1000
+        """), {"d": d}).mappings().fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

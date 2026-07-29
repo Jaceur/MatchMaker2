@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { API_BASE_URL, getToken, api } from "@/lib/api";
 import type { Incorp } from "@/lib/types";
 import { Card } from "@/components/ui";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, companiesHouseUrl } from "@/lib/format";
 
 const MAX_ON_SCREEN = 25;
 type Status = "connecting" | "live" | "reconnecting";
@@ -172,7 +172,15 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
                 >
                   <Card className={`flex items-center justify-between gap-4 p-3.5 transition ${claimedBy ? "opacity-45" : ""}`}>
                     <div className="min-w-0">
-                      <p className="truncate font-semibold">{c.company_name || "(no name)"}</p>
+                      <a
+                        href={companiesHouseUrl(c.company_number) ?? "#"}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block truncate font-semibold hover:text-brand hover:underline"
+                        title="Open on Companies House"
+                      >
+                        {c.company_name || "(no name)"}
+                      </a>
                       <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted">
                         <span className="font-mono">{c.company_number}</span>
                         {c.date_of_creation && <span>· inc. {c.date_of_creation}</span>}

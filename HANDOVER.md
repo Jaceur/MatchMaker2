@@ -429,7 +429,10 @@ python experiment_sic.py              # SIC feature experiment
 
 ## 13. New-incorps live stream (added 2026-07-27)
 
-A real-time feed of every new UK incorporation, **ephemeral by design** — no DB, no persistence.
+A real-time feed of every new UK incorporation. The stream itself is **ephemeral** (in-memory ring
+buffer, nothing stored) — with two exceptions that ARE persisted: **claims** (`new_incorp_claims`)
+and **high-value incorps** (`high_value_incorps`, for the archive). Regular unclaimed incorps are
+never stored.
 
 **Flow:** `CHStream (separate Railway service) --POST per company--> API /new-incorps/ingest --in-memory fan-out--> API /new-incorps/stream (SSE) --> React /new-incorps page (rolling 25, newest on top)`.
 
@@ -453,6 +456,18 @@ A real-time feed of every new UK incorporation, **ephemeral by design** — no D
   "My pipeline" are **submenus** under New Incorps in `AppShell`. `EventSource` handles both the default
   incorp message and the `claim` event; claimed tiles render greyed + "🔒 taken". `API_BASE_URL` exported
   from `lib/api.ts`. Tiles show CHStream's enrichment (director / capital / corporate owner / city / other-cos).
+- **High-Value archive (2026-07-29)** — high-value incorps are now PERSISTED (table
+  `high_value_incorps`, upsert-on-ingest, first-seen snapshot) so they're not lost when they scroll
+  off the ephemeral stream. `GET /new-incorps/archive?date=YYYY-MM-DD` returns that day's rows (by
+  **`date_of_creation`**), highest capital first, LEFT-JOINed to claims for grey-out. Page
+  `(app)/new-incorps/archive/page.tsx` (submenu "HV archive"): a date picker → an Excel-like table
+  (Company [CH link] / SIC / Starting capital / Owned-by-co / City) with **Copy 5 & claim** and
+  **Already claimed** per row — both grey the row. "Already claimed" claims with `via='already'` +
+  `outcome='already_claimed'` so it greys everywhere but **skips the pipeline** (it's handled
+  elsewhere); "Copy 5 & claim" is the normal claim (enters the pipeline). Only high-value leads are
+  archived — regular incorps stay ephemeral.
+- **Company names link to Companies House** on both the stream tiles and the archive table
+  (`format.companiesHouseUrl` → `find-and-update.company-information.service.gov.uk/company/{crn}`).
 - **Per-AE outreach pipeline (2026-07-29)** — claiming a lead puts it in the claimer's pipeline
   (`(app)/new-incorps/pipeline/page.tsx`, submenu "My pipeline"). `new_incorp_claims` gained
   `steps` JSONB (free-form bool map so the step set can grow — currently `connection_request`,

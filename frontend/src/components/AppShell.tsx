@@ -21,6 +21,7 @@ const NAV: NavItem[] = [
     href: "/new-incorps", label: "New Incorps", icon: "✨",
     children: [
       { href: "/new-incorps/high-value", label: "High-value", icon: "💎" },
+      { href: "/new-incorps/archive", label: "HV archive", icon: "🗄️" },
       { href: "/new-incorps/pipeline", label: "My pipeline", icon: "📋" },
     ],
   },
