@@ -26,8 +26,11 @@ var SHARED_KEY = 'PASTE_THE_SAME_LONG_RANDOM_STRING_HERE';
 var AE_COLUMNS = ['Claimed by', 'Status', 'Notes'];
 
 // How many rows from the top to check for duplicates. New rows land on top, so
-// the recent past is all that matters. Bigger = safer, slower.
-var DEDUPE_ROWS = 2000;
+// the recent past is all that matters. Bigger = safer, slower — and since
+// high-value rows now arrive one at a time in real time, per-call cost is paid
+// far more often, so this is deliberately modest. The API de-duplicates too
+// (10,000 keys in memory); this only has to catch what an API restart forgets.
+var DEDUPE_ROWS = 750;
 
 var KEY_COLUMN = 'Company number';   // what "the same company" means
 

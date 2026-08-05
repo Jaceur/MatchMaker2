@@ -515,8 +515,15 @@ python experiment_sic.py              # SIC feature experiment
 >   `'Jane Smith; ACME HOLDINGS LTD (company)'` — corporates keep their name VERBATIM, since the
 >   person-name splitter would turn ACME HOLDINGS LTD into "Acme Ltd"). `row_for` falls back to
 >   the merged name so the column isn't blank while CHStream is mid-deploy.
-> - **Regular-row batching 60s → 15s** (high-value stays ~3s). The constraint is Apps Script's
->   daily runtime quota, not our CPU — that's why it's batched at all.
+> - **High-value is REAL TIME; regular-row batching 60s → 15s.** `enqueue` sets an
+>   `asyncio.Event` that wakes the flusher, replacing the 1s polling tick (which was itself a
+>   latency floor) — measured **48ms** from ingest to the outbound POST. `SHEET_FLUSH_SECONDS*`
+>   of **0 = real time**. Only ONE POST is ever in flight (the flush is awaited in the loop), so
+>   a burst coalesces into a bigger batch instead of stampeding Apps Script — whose script lock
+>   would serialise it anyway. **Why the unfiltered feed is still batched:** Apps Script's daily
+>   runtime quota (90 min personal / 6 h Workspace) at ~1-2s a call means 2,000 individual pushes
+>   could exhaust it; high-value is a fraction of that volume. `DEDUPE_ROWS` in `Code.gs` cut
+>   2000 → 750 for the same reason — per-call cost is now paid far more often.
 > - **`Code.gs` auto-adds missing columns** (`addMissingColumns`), to the left of the AE-owned
 >   ones, so a new Matchmaker field lands on EXISTING tabs instead of being dropped. Trade-off:
 >   a column you delete comes back next send — **hide unwanted columns, don't delete them.**

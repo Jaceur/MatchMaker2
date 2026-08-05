@@ -61,14 +61,16 @@ class Settings(BaseSettings):
     # they're missing, header row included).
     sheet_tab_all: str = "New Incorps"
     sheet_tab_high_value: str = "High Value"
-    # How long a row may wait before its batch is sent. The trade-off is Apps
-    # Script's DAILY RUNTIME QUOTA (90 min on a personal account, 6 h on
-    # Workspace): shorter waits mean more, smaller calls. High-value rows are the
-    # first-to-contact race, so they barely wait; the rest were on 60s until
-    # 2026-08-05 and are now 15s, which is still ~4x fewer calls than one-per-row.
-    # Push these lower if the sheet feels laggy and the quota allows it.
+    # How long a row may wait before its batch is sent. **0 = real time**: the
+    # flusher is woken the moment the row is queued, no polling delay.
+    #
+    # The trade-off is Apps Script's DAILY RUNTIME QUOTA (90 min on a personal
+    # account, 6 h on Workspace) — each call costs ~1-2s, so one call per row is
+    # ~35-70 min/day at 2,000 incorps. High-value is a fraction of that volume, so
+    # it runs real-time (2026-08-05); the unfiltered feed stays batched because
+    # nobody is racing on it and it's the half that would burn the quota.
     sheet_flush_seconds: int = 15
-    sheet_flush_seconds_high_value: int = 3
+    sheet_flush_seconds_high_value: int = 0
 
     @field_validator("jwt_secret")
     @classmethod

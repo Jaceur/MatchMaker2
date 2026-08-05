@@ -175,8 +175,42 @@ def test_nothing_pending_never_flushes():
 def test_high_value_flushes_fast_regular_waits():
     """The whole point of the two tiers: high value is a first-to-contact race."""
     assert should_flush(1, HV_FLUSH_SECONDS, True) is True
-    assert should_flush(1, HV_FLUSH_SECONDS, False) is False
     assert should_flush(1, ALL_FLUSH_SECONDS, False) is True
+
+
+def test_high_value_is_due_the_instant_it_arrives(configured):
+    """Real time (2026-08-05): a brand-new high-value row with zero age is
+    already due — no waiting for a tick, no waiting for a batch."""
+    configured.enqueue(EVENT, high_value_reasons(EVENT))
+    assert configured._due() is True
+    assert configured._deadline() == 0
+
+
+def test_a_regular_row_alone_still_waits_its_batch(configured):
+    """The unfiltered feed is what would burn the Apps Script quota, so it must
+    NOT inherit the real-time path."""
+    plain = {"company_number": "9", "postcode": "M1 1AE"}
+    configured.enqueue(plain, high_value_reasons(plain))
+    assert configured._due() is False
+    assert 0 < configured._deadline() <= ALL_FLUSH_SECONDS
+
+
+def test_one_high_value_row_pulls_waiting_regular_rows_with_it(configured):
+    """A real-time flush takes everything pending, so ordinary rows ride along
+    for free rather than costing a second call."""
+    plain = {"company_number": "9", "postcode": "M1 1AE"}
+    configured.enqueue(plain, high_value_reasons(plain))
+    configured.enqueue(EVENT, high_value_reasons(EVENT))
+    assert configured._due() is True
+    batch = configured._take_batch()
+    assert sum(len(rows) for rows in batch.values()) == 3
+
+
+def test_enqueue_wakes_the_flusher(configured):
+    """The wake event is what makes it real time rather than poll-time."""
+    assert configured._wake.is_set() is False
+    configured.enqueue(EVENT, high_value_reasons(EVENT))
+    assert configured._wake.is_set() is True
 
 
 def test_a_full_batch_flushes_immediately():

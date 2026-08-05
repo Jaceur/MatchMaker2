@@ -95,10 +95,16 @@ returns `queued / sent / dropped / last_sent_at / last_error`.
   high-value company appears in both, and the **Why high value** column says
   which rule fired. The £10k figure is the `HIGH_VALUE_CAPITAL_THRESHOLD`
   variable on the API service — change it there, no deploy needed.
-- **Timing.** High-value rows are pushed within ~3 seconds, ordinary rows within
-  ~15. Batching at all is deliberate — it keeps the script inside Google's daily
-  runtime quota. Both are tunable (`SHEET_FLUSH_SECONDS_HIGH_VALUE` /
-  `SHEET_FLUSH_SECONDS`).
+- **Timing.** High-value rows go **in real time** — the API starts the POST the
+  moment the company arrives (~50ms), so what you're waiting on is Companies
+  House and the director/PSC lookups, not us. Ordinary rows batch for ~15s.
+  That split is deliberate: Google caps Apps Script at **90 min of runtime a day
+  on a personal account** (6 h on Workspace) and each call costs 1–2s, so pushing
+  all ~2,000/day individually could exhaust it. Both are tunable —
+  `SHEET_FLUSH_SECONDS_HIGH_VALUE` and `SHEET_FLUSH_SECONDS`, where **0 means
+  real time**. If you want the unfiltered tab live too, set `SHEET_FLUSH_SECONDS=0`
+  and watch for afternoon failures in `sheet-status`; that's what quota
+  exhaustion looks like.
 - **The columns.** Company, Companies House link, **First director**, **PSC**
   (all persons with significant control, corporates marked `(company)`), SIC
   codes, starting capital, city + postcode, plus the director details used by the

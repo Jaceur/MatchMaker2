@@ -10,11 +10,13 @@ worst a bad actor with the sheet can do is edit their own copy of the data.
 
 Two latency tiers, because they answer different questions:
 
-* **High-value** rows are the first-to-contact race, so they flush within a few
-  seconds of arriving.
-* **All** rows are a log, so they ride a 15s batch. Batching at all is what keeps
-  ~2,000 incorporations/day from becoming 2,000 Apps Script calls — its daily
-  runtime quota is the real constraint here, not our CPU.
+* **High-value** rows are the first-to-contact race, so they go **in real time**:
+  `enqueue` wakes the flusher immediately and the POST starts at once.
+* **All** rows are a log, so they ride a 15s batch. Batching that half is what
+  keeps ~2,000 incorporations/day from becoming 2,000 Apps Script calls — its
+  daily runtime quota (90 min personal / 6 h Workspace) is the real constraint
+  here, not our CPU. Set `SHEET_FLUSH_SECONDS=0` to make everything real-time,
+  but watch the quota if you do.
 
 Everything is fail-safe: `enqueue` is synchronous, non-blocking and swallows its
 own errors, so a broken sheet (or a wrong URL, or Google being down) can never
@@ -38,7 +40,8 @@ HV_FLUSH_SECONDS = settings.sheet_flush_seconds_high_value   # the race
 ALL_FLUSH_SECONDS = settings.sheet_flush_seconds             # the log
 MAX_BATCH = 200             # rows per POST (Apps Script handles this comfortably)
 MAX_PENDING = 5_000         # backlog cap; oldest dropped past this (never grow unbounded)
-TICK_SECONDS = 1.0          # how often the flusher re-checks
+IDLE_WAIT_SECONDS = 30      # how long the flusher sleeps with nothing queued
+                            # (only a ceiling — an arriving row wakes it instantly)
 SEND_TIMEOUT = 60           # Apps Script can be slow to wake; be patient
 SEND_RETRIES = 3
 DEDUPE_MEMORY = 10_000      # recent (tab, company_number) keys held to skip repeats
@@ -129,7 +132,8 @@ def should_flush(pending: int, oldest_age: float, has_high_value: bool) -> bool:
     """Pure flush decision — the whole scheduling policy in one testable place.
 
     Flush when the batch is full, or when the oldest row has waited long enough:
-    3s if any high-value row is waiting (the race), 60s otherwise (the log).
+    `HV_FLUSH_SECONDS` if any high-value row is waiting (0 = real time — the
+    race), `ALL_FLUSH_SECONDS` otherwise (15s — the log).
     """
     if pending <= 0:
         return False
@@ -146,6 +150,7 @@ class SheetSink:
         self._seen_keys: set = set()
         self._seen_order: deque = deque()
         self._task: asyncio.Task | None = None
+        self._wake = asyncio.Event()            # a new row interrupts the wait
         self._stop = False
         self.stats = {"queued": 0, "sent": 0, "dropped": 0, "failed_batches": 0,
                       "last_sent_at": None, "last_error": None}
@@ -192,10 +197,22 @@ class SheetSink:
             while len(self._pending) > MAX_PENDING:
                 self._pending.popleft()
                 self.stats["dropped"] += 1
+            # Wake the flusher NOW rather than letting it find this on its next
+            # poll. With a 0-second wait (high value) that's the difference
+            # between "real time" and "within a second".
+            self._wake.set()
         except Exception as e:      # pragma: no cover - belt and braces
             self.stats["last_error"] = f"enqueue: {e}"
 
     # ---- consumer side (background task) ----------------------------------
+    def _deadline(self) -> float:
+        """Seconds the oldest pending row may still wait. 0 = send it now."""
+        if not self._pending:
+            return IDLE_WAIT_SECONDS
+        has_hv = any(item[3] for item in self._pending)
+        wait = HV_FLUSH_SECONDS if has_hv else ALL_FLUSH_SECONDS
+        return max(0.0, wait - (_now() - self._pending[0][0]))
+
     def _due(self) -> bool:
         if not self._pending:
             return False
@@ -265,9 +282,17 @@ class SheetSink:
         return False, last
 
     async def _run(self) -> None:
+        """Sleep until the oldest pending row is due — or until `enqueue` wakes
+        us, whichever comes first. Only ONE POST is ever in flight (the flush is
+        awaited here), so a burst naturally coalesces into a bigger batch instead
+        of stampeding Apps Script, whose script lock would serialise it anyway."""
         while not self._stop:
             try:
-                await asyncio.sleep(TICK_SECONDS)
+                try:
+                    await asyncio.wait_for(self._wake.wait(), timeout=self._deadline())
+                except asyncio.TimeoutError:
+                    pass             # the deadline came first — that's fine
+                self._wake.clear()
                 if self._due():
                     await self._flush()
             except asyncio.CancelledError:
@@ -289,7 +314,10 @@ class SheetSink:
             self._stop = False
             self._task = asyncio.create_task(self._run())
             mode = "all + high-value" if settings.sheet_send_all else "high-value only"
-            print(f"[sheet] sink started ({mode}) -> {settings.sheet_webhook_url[:60]}...", flush=True)
+            pace = (f"high-value {'REAL TIME' if HV_FLUSH_SECONDS <= 0 else f'{HV_FLUSH_SECONDS}s'}, "
+                    f"rest {'REAL TIME' if ALL_FLUSH_SECONDS <= 0 else f'{ALL_FLUSH_SECONDS}s'}")
+            print(f"[sheet] sink started ({mode}; {pace}) -> "
+                  f"{settings.sheet_webhook_url[:60]}...", flush=True)
 
     async def stop(self) -> None:
         """Flush what's left, then stop — a redeploy shouldn't lose the buffer."""
