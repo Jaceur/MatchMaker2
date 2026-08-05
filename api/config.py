@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # is never open by accident. Env: NEW_INCORP_INGEST_KEY.
     new_incorp_ingest_key: str = ""
 
+    # Starting capital (£) a new incorporation must be strictly ABOVE to count as
+    # high value. Lowered 25,000 -> 10,000 on 2026-08-05. Env-tunable
+    # (HIGH_VALUE_CAPITAL_THRESHOLD) so retuning it is a variable change, not a
+    # code change — expect to move it again once you see the volume it lets in.
+    high_value_capital_threshold: int = 10_000
+
     # ---- Google Sheet sink (one-way: the API POSTs, it never reads back) ----
     # The Apps Script web-app /exec URL. EMPTY = the whole sink is off (nothing
     # queued, no background task, no calls) — so the sheet is opt-in per
@@ -55,6 +61,14 @@ class Settings(BaseSettings):
     # they're missing, header row included).
     sheet_tab_all: str = "New Incorps"
     sheet_tab_high_value: str = "High Value"
+    # How long a row may wait before its batch is sent. The trade-off is Apps
+    # Script's DAILY RUNTIME QUOTA (90 min on a personal account, 6 h on
+    # Workspace): shorter waits mean more, smaller calls. High-value rows are the
+    # first-to-contact race, so they barely wait; the rest were on 60s until
+    # 2026-08-05 and are now 15s, which is still ~4x fewer calls than one-per-row.
+    # Push these lower if the sheet feels laggy and the quota allows it.
+    sheet_flush_seconds: int = 15
+    sheet_flush_seconds_high_value: int = 3
 
     @field_validator("jwt_secret")
     @classmethod

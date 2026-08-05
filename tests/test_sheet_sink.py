@@ -63,6 +63,25 @@ def test_row_maps_the_fields_an_ae_needs():
     assert row["Received"] == "2026-08-04 09:30:00"
     assert row["Companies House"].endswith("/company/12345678")
     assert "Jane%20Smith" in row["LinkedIn"]
+    assert row["City"] == "London"
+
+
+def test_director_and_psc_are_separate_columns():
+    """Who RUNS it and who OWNS it are different questions — and often different
+    people. The merged director_* name can't answer either on its own."""
+    event = {**EVENT, "first_director_name": "Jane Smith",
+             "psc_names": "Robert Jones; ACME HOLDINGS LTD (company)"}
+    row = row_for(event, [])
+    assert row["First director"] == "Jane Smith"
+    assert row["PSC"] == "Robert Jones; ACME HOLDINGS LTD (company)"
+
+
+def test_first_director_falls_back_for_older_chstream_payloads():
+    """CHStream deploys separately, so the API must handle events sent before it
+    learned these fields — an empty column would look like "no director"."""
+    row = row_for(EVENT, [])          # EVENT has no first_director_name
+    assert row["First director"] == "Jane Smith"
+    assert row["PSC"] == ""
 
 
 def test_absent_capital_stays_blank_not_zero():
@@ -125,6 +144,17 @@ def test_disabled_sink_queues_nothing():
     sink = SheetSink()
     sink.enqueue(EVENT, high_value_reasons(EVENT))
     assert list(sink._pending) == [] and sink.stats["queued"] == 0
+
+
+def test_a_url_without_a_key_is_off_not_on(configured, monkeypatch):
+    """Regression, 2026-08-05: half-configured used to count as enabled, so the
+    sink queued rows it could never send and dropped them a minute later — 362
+    leads lost in production before anyone read the stats. Missing either half
+    must mean OFF, so nothing is ever queued against a dead endpoint."""
+    monkeypatch.setattr(settings, "sheet_webhook_key", "")
+    assert configured.enabled is False
+    configured.enqueue(EVENT, high_value_reasons(EVENT))
+    assert list(configured._pending) == [] and configured.stats["dropped"] == 0
 
 
 def test_the_same_company_is_only_sent_once(configured):

@@ -3,7 +3,8 @@
 CHStream POSTs each new company to `/new-incorps/ingest`; browsers hold an SSE
 connection to `/new-incorps/stream?channel=all|high_value` and show the newest
 25, oldest falling off. The **High-Value** channel only carries leads meeting one
-of: starting capital > £25k, corporate ownership, or a London Zone-1 postcode.
+of: starting capital over `HIGH_VALUE_CAPITAL_THRESHOLD` (£10k as of 2026-08-05),
+corporate ownership, or a London Zone-1 postcode.
 
 The stream is ephemeral (in-memory ring buffer per channel). The exception is a
 CLAIM: when an AE copies a company, the browser calls `/claim` — it's stored in
@@ -44,7 +45,12 @@ _HEARTBEAT_SECONDS = 15
 CHANNELS = ("all", "high_value")
 
 # ---- High-Value criteria (any one qualifies) ----
-CAPITAL_THRESHOLD = 25_000       # starting capital strictly ABOVE this
+def capital_threshold() -> int:
+    """Starting capital strictly ABOVE this counts as high value. Comes from
+    config (env `HIGH_VALUE_CAPITAL_THRESHOLD`, £10k as of 2026-08-05) instead of
+    being a constant, so retuning it is a Railway variable change. Read per call,
+    so a restart picks up a new value."""
+    return settings.high_value_capital_threshold
 # London Zone-1 postcode OUTWARD codes (broad-central set, confirmed with the
 # user): EC*, WC*, W1, SW1, SE1, NW1, N1, E1. The patterns exclude neighbours by
 # district number — W1 but not W10, N1 but not N10, E1 but not E14, etc.
@@ -87,7 +93,7 @@ def high_value_reasons(event: dict) -> list[str]:
     """
     reasons = []
     cap = _capital(event)
-    if cap is not None and cap > CAPITAL_THRESHOLD:
+    if cap is not None and cap > capital_threshold():
         reasons.append(f"Capital £{int(cap):,}")
     if event.get("corporate_owner"):
         owner = (event.get("owner_name") or "").strip()
@@ -98,7 +104,7 @@ def high_value_reasons(event: dict) -> list[str]:
 
 
 def is_high_value(event: dict) -> bool:
-    """Any one of: capital > £25k, corporate owner, or a Zone-1 postcode."""
+    """Any one of: capital over the threshold, corporate owner, Zone-1 postcode."""
     return bool(high_value_reasons(event))
 
 

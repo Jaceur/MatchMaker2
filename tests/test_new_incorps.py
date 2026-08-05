@@ -12,8 +12,9 @@ os.environ.setdefault("SUPABASE_USER", "test")
 
 import pytest  # noqa: E402
 
+from api.config import settings  # noqa: E402
 from api.routers.new_incorps import (  # noqa: E402
-    MAX_ON_SCREEN, _Broker, _sse, is_high_value, is_zone1,
+    MAX_ON_SCREEN, _Broker, _sse, capital_threshold, is_high_value, is_zone1,
 )
 
 
@@ -38,7 +39,7 @@ def test_zone1_excludes_neighbours_and_junk(pc):
 
 
 def test_high_value_is_any_one_criterion():
-    assert is_high_value({"starting_capital": 30000}) is True          # > £25k
+    assert is_high_value({"starting_capital": 30000}) is True          # over the bar
     assert is_high_value({"corporate_owner": True}) is True            # corporate
     assert is_high_value({"postcode": "EC1V 0AA"}) is True             # zone 1
     # none of them:
@@ -46,8 +47,20 @@ def test_high_value_is_any_one_criterion():
 
 
 def test_capital_threshold_is_strictly_above():
-    assert is_high_value({"starting_capital": 25000}) is False
-    assert is_high_value({"starting_capital": 25001}) is True
+    """£10k as of 2026-08-05 (was £25k) — and it's the bar itself that must not
+    qualify, or "over £10k" quietly means "£10k and up"."""
+    assert capital_threshold() == 10_000
+    assert is_high_value({"starting_capital": 10_000}) is False
+    assert is_high_value({"starting_capital": 10_001}) is True
+
+
+def test_threshold_is_tunable_without_a_deploy(monkeypatch):
+    """It's read per call from config, so a Railway variable change + restart
+    retunes it. £15k leads used to be invisible; they aren't now."""
+    monkeypatch.setattr(settings, "high_value_capital_threshold", 50_000)
+    assert is_high_value({"starting_capital": 30_000}) is False
+    monkeypatch.setattr(settings, "high_value_capital_threshold", 5_000)
+    assert is_high_value({"starting_capital": 30_000}) is True
 
 
 def test_capital_empty_or_garbage_is_safe():

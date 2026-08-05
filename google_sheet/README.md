@@ -75,8 +75,9 @@ service → Variables, add:
 | `SHEET_WEBHOOK_KEY` | the same long random string from step 3 |
 | `SHEET_SEND_ALL` | `1` for every incorporation (~2,000/day), `0` for high-value only |
 
-The service redeploys; on boot the logs say
-`[sheet] sink started (all + high-value) -> https://script.google.com/...`.
+**Both** the URL and the key are required — with only one of them set the feed
+stays OFF and the boot log names the missing half. The service redeploys; on boot
+the logs say `[sheet] sink started (all + high-value) -> https://script.google.com/...`.
 
 **7. Check it's flowing.** Either watch the Sheet (new rows land at the **top**,
 under the header), or hit `GET /new-incorps/sheet-status` while logged in — it
@@ -90,17 +91,27 @@ returns `queued / sent / dropped / last_sent_at / last_error`.
   so the freshest is always row 2. Sorting or filtering the sheet yourself is
   fine — the script inserts under the header regardless.
 - **Two tabs.** *New Incorps* is everything; *High Value* is the filtered feed
-  (capital > £25k, a corporate owner, or a London Zone-1 postcode). A high-value
-  company appears in both, and the **Why high value** column says which rule
-  fired.
-- **Timing.** High-value rows are pushed within ~3 seconds. Ordinary rows are
-  batched for up to 60 seconds — this is deliberate: it keeps the script inside
-  Google's daily runtime quota, and nobody is racing on the unfiltered feed.
+  (capital **> £10k**, a corporate owner, or a London Zone-1 postcode). A
+  high-value company appears in both, and the **Why high value** column says
+  which rule fired. The £10k figure is the `HIGH_VALUE_CAPITAL_THRESHOLD`
+  variable on the API service — change it there, no deploy needed.
+- **Timing.** High-value rows are pushed within ~3 seconds, ordinary rows within
+  ~15. Batching at all is deliberate — it keeps the script inside Google's daily
+  runtime quota. Both are tunable (`SHEET_FLUSH_SECONDS_HIGH_VALUE` /
+  `SHEET_FLUSH_SECONDS`).
+- **The columns.** Company, Companies House link, **First director**, **PSC**
+  (all persons with significant control, corporates marked `(company)`), SIC
+  codes, starting capital, city + postcode, plus the director details used by the
+  Salesforce copy, and the high-value verdict with its reason.
 - **Add your own columns freely** (Claimed by, Status, Notes, anything). The
   script matches on header *name* and only fills columns Matchmaker sent, so
-  yours are never touched. You can also reorder or delete our columns — the
-  header row wins. The one column to leave alone is **Company number**: it's how
-  duplicates are detected.
+  yours are never touched, and you can reorder ours however you like. Two
+  caveats: leave **Company number** alone (it's how duplicates are detected), and
+  to get rid of a column **hide it rather than deleting it** — the script re-adds
+  any column it's still being sent, so a deleted one reappears.
+- **New fields arrive on their own.** When Matchmaker starts sending a column
+  your sheet doesn't have, the script inserts it (to the left of your own
+  columns) rather than dropping the data.
 - **Duplicates.** The script checks the newest 2,000 rows before inserting, so a
   Companies House re-send or an API restart won't double up.
 - **Volume.** ~2,000 rows a day on *New Incorps*. Google Sheets tops out at 10

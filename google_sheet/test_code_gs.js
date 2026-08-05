@@ -24,6 +24,11 @@ function makeSheet(name) {
       grid.splice(after, 0, ...blank);
       return sheet;
     },
+    insertColumnsAfter: (after, howMany) => {
+      const blanks = Array.from({ length: howMany }, () => '');
+      grid.forEach((row) => row.splice(after, 0, ...blanks));
+      return sheet;
+    },
     getRange: (row, col, numRows = 1, numCols = 1) => ({
       getValues: () => {
         const out = [];
@@ -125,14 +130,38 @@ post({ key: 'test-key', columns: COLUMNS,
 check('maps by header name after a column is deleted',
       hv.grid[1][0] === 'EPSILON LTD' && hv.grid[1][1] === '9' && hv.grid[1][4] === 'Zone 1 (EC1V)');
 
-// 8. a key Matchmaker doesn't send leaves the cell blank, never overwrites
-check('unsent columns left blank', hv.grid[1][5] === '' || hv.grid[1][5] === undefined);
+// 8. a column Matchmaker never sends (the AE ones) is left blank, never written
+const notesAt = hv.grid[0].indexOf('Notes');
+check('unsent columns left blank',
+      hv.grid[1][notesAt] === '' || hv.grid[1][notesAt] === undefined);
+
+// 8b. a column the user DELETED is restored, because we send it again. This is
+//     the trade-off of auto-adding columns: hide unwanted ones, don't delete.
+check('a deleted column comes back on the next send', hv.grid[0].indexOf('Received') !== -1);
 
 // 9. a legacy row Sheets coerced to a number still counts as a duplicate
 all.grid.splice(1, 0, ['x', 'ZETA LTD', 1234567, '', '', '', '', '', '']);
 const beforeZeta = all.grid.length;
 post({ key: 'test-key', columns: COLUMNS, sheets: { 'New Incorps': [row('01234567', 'ZETA LTD')] } });
 check('numeric company number still de-dupes against 0-padded', all.grid.length === beforeZeta);
+
+// 10. a NEW column Matchmaker starts sending is added to an existing tab,
+//     to the LEFT of the AE columns, without disturbing their data
+const WIDER = COLUMNS.concat(['First director', 'PSC']);
+all.grid[1][6] = 'josh-2';                       // an AE value on the top row
+post({ key: 'test-key', columns: WIDER,
+       sheets: { 'New Incorps': [row('11', 'THETA LTD', { 'First director': 'Jane Smith',
+                                                          PSC: 'ACME HOLDINGS LTD (company)' })] } });
+const head = all.grid[0];
+check('new columns added before the AE columns',
+      head.indexOf('First director') < head.indexOf('Claimed by') &&
+      head.indexOf('PSC') < head.indexOf('Claimed by'));
+check('new column values written',
+      all.grid[1][head.indexOf('First director')] === 'Jane Smith' &&
+      all.grid[1][head.indexOf('PSC')] === 'ACME HOLDINGS LTD (company)');
+check('existing AE data survived the column insert',
+      all.grid[2][head.indexOf('Claimed by')] === 'josh-2');
+check('AE columns still last', head.slice(-3).join('|') === 'Claimed by|Status|Notes');
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll Apps Script checks passed.');
 process.exit(failures ? 1 : 0);

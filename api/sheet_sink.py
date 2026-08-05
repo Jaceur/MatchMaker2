@@ -12,9 +12,9 @@ Two latency tiers, because they answer different questions:
 
 * **High-value** rows are the first-to-contact race, so they flush within a few
   seconds of arriving.
-* **All** rows are a log, so they ride a slow 60s batch. That collapses ~2,000
-  incorporations/day into a few hundred Apps Script calls instead of 2,000 —
-  Apps Script's daily runtime quota is the real constraint here, not our CPU.
+* **All** rows are a log, so they ride a 15s batch. Batching at all is what keeps
+  ~2,000 incorporations/day from becoming 2,000 Apps Script calls — its daily
+  runtime quota is the real constraint here, not our CPU.
 
 Everything is fail-safe: `enqueue` is synchronous, non-blocking and swallows its
 own errors, so a broken sheet (or a wrong URL, or Google being down) can never
@@ -31,8 +31,11 @@ import requests
 from .config import settings
 
 # ---- Tunables -------------------------------------------------------------
-HV_FLUSH_SECONDS = 3        # high-value rows: the race — go almost immediately
-ALL_FLUSH_SECONDS = 60      # regular rows: a log — batch hard to save quota
+# The two wait times come from config (env SHEET_FLUSH_SECONDS_HIGH_VALUE /
+# SHEET_FLUSH_SECONDS) so pacing can be retuned without a deploy. Read once at
+# import — a restart applies a new value.
+HV_FLUSH_SECONDS = settings.sheet_flush_seconds_high_value   # the race
+ALL_FLUSH_SECONDS = settings.sheet_flush_seconds             # the log
 MAX_BATCH = 200             # rows per POST (Apps Script handles this comfortably)
 MAX_PENDING = 5_000         # backlog cap; oldest dropped past this (never grow unbounded)
 TICK_SECONDS = 1.0          # how often the flusher re-checks
@@ -46,7 +49,8 @@ DEDUPE_MEMORY = 10_000      # recent (tab, company_number) keys held to skip rep
 # columns in the sheet and nothing here needs to change.
 SHEET_COLUMNS = [
     "Received", "Company", "Company number", "Incorporated", "SIC codes",
-    "City", "Postcode", "Starting capital", "Corporate owner", "Owner name",
+    "City", "Postcode", "Starting capital", "First director", "PSC",
+    "Corporate owner", "Owner name",
     "First name", "Last name", "Director DOB", "Director residence",
     "Other directorships", "High value", "Why high value",
     "Companies House", "LinkedIn",
@@ -101,6 +105,12 @@ def row_for(event: dict, reasons: list[str] | None = None) -> dict:
         "City": str(event.get("city") or ""),
         "Postcode": str(event.get("postcode") or ""),
         "Starting capital": _capital_cell(event.get("starting_capital")),
+        # Who RUNS it vs who OWNS it — two different conversations. The fallback
+        # covers events sent by a CHStream that predates these fields: the merged
+        # name is PSC-preferred, so it's the best guess available for a director.
+        "First director": str(event.get("first_director_name")
+                              or " ".join(p for p in (first, last) if p)),
+        "PSC": str(event.get("psc_names") or ""),
         "Corporate owner": "Yes" if event.get("corporate_owner") else "",
         "Owner name": str(event.get("owner_name") or ""),
         "First name": first,
@@ -143,7 +153,11 @@ class SheetSink:
     # ---- configuration ----------------------------------------------------
     @property
     def enabled(self) -> bool:
-        return bool(settings.sheet_webhook_url)
+        """BOTH halves are required. Half-configured used to count as enabled,
+        which meant the sink happily queued rows it could never send and dropped
+        them a minute later — 362 leads lost before anyone looked at the stats.
+        Missing either value now means OFF, and `start()` says which one."""
+        return bool(settings.sheet_webhook_url and settings.sheet_webhook_key)
 
     # ---- producer side (called from the ingest request — must never block) --
     def _dedupe(self, key: str) -> bool:
@@ -218,7 +232,9 @@ class SheetSink:
     def _post(self, batch: dict[str, list[dict]]) -> tuple[bool, str | None]:
         """POST one batch, with backoff. Runs in a worker thread."""
         if not settings.sheet_webhook_key:
-            return False, "SHEET_WEBHOOK_KEY not set — refusing to post to a public web app."
+            # Unreachable now that `enabled` requires the key (kept as a guard:
+            # a published Apps Script URL is public, so never post unauthenticated).
+            return False, "SHEET_WEBHOOK_KEY not set - refusing to post to a public web app."
         payload = {"key": settings.sheet_webhook_key,
                    "columns": SHEET_COLUMNS, "sheets": batch}
         last = None
@@ -263,7 +279,11 @@ class SheetSink:
     # ---- lifecycle --------------------------------------------------------
     def start(self) -> None:
         if not self.enabled:
-            print("[sheet] SHEET_WEBHOOK_URL not set — Google Sheet sink is off.", flush=True)
+            # Name the missing half. "Sink is off" on its own reads like a
+            # deliberate config and sends you looking in the wrong place.
+            missing = "SHEET_WEBHOOK_URL" if not settings.sheet_webhook_url else "SHEET_WEBHOOK_KEY"
+            print(f"[sheet] {missing} is NOT SET - Google Sheet feed is OFF "
+                  f"(both SHEET_WEBHOOK_URL and SHEET_WEBHOOK_KEY are required).", flush=True)
             return
         if self._task is None or self._task.done():
             self._stop = False

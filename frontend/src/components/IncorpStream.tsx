@@ -134,7 +134,7 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
   const dot = status === "live" ? "bg-success" : status === "reconnecting" ? "bg-warning" : "bg-muted";
   const heading = channel === "high_value" ? "💎 High-value incorporations — live" : "✨ New incorporations — live";
   const blurb = channel === "high_value"
-    ? "Capital > £25k, corporate-owned, or a London Zone-1 postcode. Newest on top, 25 max."
+    ? "Capital > £10k, corporate-owned, or a London Zone-1 postcode. Newest on top, 25 max."
     : "Every UK company as it's registered. Newest on top; 25 most recent only. Nothing is saved.";
 
   return (

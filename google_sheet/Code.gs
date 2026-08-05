@@ -70,7 +70,7 @@ function doPost(e) {
 function writeRows(tabName, rows, defaultColumns) {
   if (!rows.length) return 0;
   var sheet = getOrCreateTab(tabName, defaultColumns);
-  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var headers = addMissingColumns(sheet, defaultColumns);
 
   var fresh = rows.filter(notAlreadyPresent(sheet, headers));
   if (!fresh.length) return 0;
@@ -90,6 +90,36 @@ function writeRows(tabName, rows, defaultColumns) {
   });
   sheet.getRange(2, 1, matrix.length, headers.length).setValues(matrix);
   return matrix.length;
+}
+
+
+/**
+ * Returns the tab's header row, first adding any column Matchmaker now sends
+ * that the sheet doesn't have yet — so a new field (e.g. 'First director', added
+ * 2026-08-05) appears on EXISTING tabs instead of being silently dropped.
+ *
+ * New columns are inserted before the AE-owned ones, so 'Claimed by / Status /
+ * Notes' stay on the right where people expect them. A column you deliberately
+ * DELETED comes back the next time it's sent — if you don't want a field, hide
+ * the column rather than deleting it.
+ */
+function addMissingColumns(sheet, wanted) {
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var missing = (wanted || []).filter(function (name) {
+    return name !== '' && headers.indexOf(name) === -1;
+  });
+  if (!missing.length) return headers;
+
+  // Insert before the first AE column if there is one, else append at the end.
+  var insertAt = headers.length;
+  for (var i = 0; i < headers.length; i++) {
+    if (AE_COLUMNS.indexOf(headers[i]) !== -1) { insertAt = i; break; }
+  }
+  sheet.insertColumnsAfter(insertAt === 0 ? 1 : insertAt, missing.length);
+  if (insertAt === 0) insertAt = 1;          // can't insert before column A
+  sheet.getRange(1, insertAt + 1, 1, missing.length).setValues([missing])
+    .setFontWeight('bold').setBackground('#f1f3f4');
+  return sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
 }
 
 

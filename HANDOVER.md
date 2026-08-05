@@ -470,7 +470,8 @@ python experiment_sic.py              # SIC feature experiment
 >   `high_value_incorps` archive all still work — the Sheet is an ADDITIONAL destination fed off
 >   the same ingest. If ZScaler is ever fixed, the in-app view is still there; if the Sheet is the
 >   long-term answer, deleting the React pages is a separate, easy cleanup.
-> - **CHStream needed no changes** — it still POSTs to the API. All the new code is in the API.
+> - **CHStream needed no changes for the Sheet itself** — it still POSTs to the API. But the
+>   2026-08-05 column additions DID need it (below), so both services deploy together now.
 > - **One-way by construction** (the explicit requirement): the API only makes outbound POSTs, the
 >   Apps Script has **no `doGet`**, and the backend holds no Google credentials. Nothing an AE
 >   types in the Sheet can reach Matchmaker. (It's a **webhook**, not a WebSocket — Sheets can't
@@ -494,9 +495,32 @@ python experiment_sic.py              # SIC feature experiment
 >   rows (leniently: `01234567` matches a Sheets-coerced `1234567`).
 > - **Env on the API service:** `SHEET_WEBHOOK_URL` (empty = whole feed off), `SHEET_WEBHOOK_KEY`
 >   (must match `SHARED_KEY` in `Code.gs`), `SHEET_SEND_ALL` (`0` = high-value only),
->   `SHEET_TAB_ALL` / `SHEET_TAB_HIGH_VALUE`. Health check: `GET /new-incorps/sheet-status`
->   (JWT) → queued/sent/dropped/last_error. Backfill the Sheet from the archive:
->   `python sheet_backfill.py 30`.
+>   `SHEET_TAB_ALL` / `SHEET_TAB_HIGH_VALUE`, `SHEET_FLUSH_SECONDS` (15) /
+>   `SHEET_FLUSH_SECONDS_HIGH_VALUE` (3), `HIGH_VALUE_CAPITAL_THRESHOLD` (10000).
+>   Health check: `GET /new-incorps/sheet-status` (JWT) → queued/sent/dropped/last_error.
+>   Backfill the Sheet from the archive: `python sheet_backfill.py 30`.
+> - **⚠️ BOTH `SHEET_WEBHOOK_URL` AND `SHEET_WEBHOOK_KEY` are required.** Learned the hard way
+>   2026-08-05: `enabled` originally checked only the URL, so a service with the URL and no key
+>   logged a confident `sink started`, queued 365 rows, refused to post any of them and dropped
+>   362. Now either one missing = feed OFF, and the boot log names the missing variable.
+>
+> **Changes 2026-08-05 (all live-tunable or additive):**
+> - **High-value capital bar £25k → £10k**, and it's no longer a constant: `capital_threshold()`
+>   reads `settings.high_value_capital_threshold` per call, so retuning is a Railway variable
+>   change + restart. Expect to move it again once the volume it lets in is visible.
+> - **`First director` and `PSC` are now their own columns.** They needed a **CHStream** change:
+>   `director_first_name/last_name` is a MERGED contact name (PSC preferred, director as
+>   fallback), so it can't answer "who runs it" or "who owns it" on its own. CHStream now also
+>   sends `first_director_name` (the first active director) and `psc_names` (every active PSC,
+>   `'Jane Smith; ACME HOLDINGS LTD (company)'` — corporates keep their name VERBATIM, since the
+>   person-name splitter would turn ACME HOLDINGS LTD into "Acme Ltd"). `row_for` falls back to
+>   the merged name so the column isn't blank while CHStream is mid-deploy.
+> - **Regular-row batching 60s → 15s** (high-value stays ~3s). The constraint is Apps Script's
+>   daily runtime quota, not our CPU — that's why it's batched at all.
+> - **`Code.gs` auto-adds missing columns** (`addMissingColumns`), to the left of the AE-owned
+>   ones, so a new Matchmaker field lands on EXISTING tabs instead of being dropped. Trade-off:
+>   a column you delete comes back next send — **hide unwanted columns, don't delete them.**
+>   Requires the script be re-deployed as a **new version** to take effect.
 
 A real-time feed of every new UK incorporation. The stream itself is **ephemeral** (in-memory ring
 buffer, nothing stored) — with two exceptions that ARE persisted: **claims** (`new_incorp_claims`)
@@ -512,7 +536,8 @@ never stored.
   to `all` (+ `high_value` if it qualifies); `GET /stream?channel=all|high_value&token=<JWT>` is the
   SSE endpoint (JWT as a query param — EventSource can't set headers; data is public CH records, page
   is behind login). Replays the current 25 (with live claim status) then streams. Heartbeat every 15s.
-- **High-Value channel** — a lead qualifies on ANY of: `starting_capital > £25k`, `corporate_owner`,
+- **High-Value channel** — a lead qualifies on ANY of: `starting_capital > HIGH_VALUE_CAPITAL_THRESHOLD`
+  (£10k since 2026-08-05, was £25k), `corporate_owner`,
   or a **London Zone-1 postcode** (`is_zone1`: outward codes EC*, WC*, W1, SW1, SE1, NW1, N1, E1 —
   district-number guarded so W1≠W10, N1≠N10, E1≠E14). Criteria live in the API (`is_high_value`), not
   CHStream, so they're tunable without redeploying the stream worker.
