@@ -38,6 +38,24 @@ class Settings(BaseSettings):
     # is never open by accident. Env: NEW_INCORP_INGEST_KEY.
     new_incorp_ingest_key: str = ""
 
+    # ---- Google Sheet sink (one-way: the API POSTs, it never reads back) ----
+    # The Apps Script web-app /exec URL. EMPTY = the whole sink is off (nothing
+    # queued, no background task, no calls) — so the sheet is opt-in per
+    # environment and a dev API can't spam production's sheet.
+    sheet_webhook_url: str = ""
+    # Shared secret the Apps Script checks on every POST. A published Apps Script
+    # web app is a public URL, so without this anyone who guesses it can write
+    # rows. Empty = the sink refuses to send (fail closed, logged once).
+    sheet_webhook_key: str = ""
+    # Send EVERY incorporation to the sheet, or high-value only. The "all" feed is
+    # ~1,500-2,500 rows/day; set SHEET_SEND_ALL=0 to keep the sheet to the
+    # high-value ones alone.
+    sheet_send_all: bool = True
+    # Tab names — must match the sheet exactly (the Apps Script creates them if
+    # they're missing, header row included).
+    sheet_tab_all: str = "New Incorps"
+    sheet_tab_high_value: str = "High Value"
+
     @field_validator("jwt_secret")
     @classmethod
     def _resolve_jwt_secret(cls, value: str) -> str:

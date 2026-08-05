@@ -33,7 +33,11 @@ async def lifespan(app: FastAPI):
     # Seed the new-incorps claim set from the DB so claims survive a restart.
     from .routers.new_incorps import load_claims_into_broker
     load_claims_into_broker()
+    # The one-way Google Sheet feed (no-op unless SHEET_WEBHOOK_URL is set).
+    from .sheet_sink import sink as sheet_sink
+    sheet_sink.start()
     yield
+    await sheet_sink.stop()      # flush the buffer before the process goes away
 
 
 app = FastAPI(title="Matchmaker 2.0 API", version="0.1.0", lifespan=lifespan)

@@ -28,6 +28,27 @@ approved leads into CRM statuses. Points/leaderboard + admin control centre + an
 | **DB** | Supabase Postgres, Session pooler + `pg8000` | Connection in `database.py`; credentials from the environment via `env_loader.py` (root `.env` locally, Railway Variables headless). |
 | **CHStream** | separate repo `Jaceur/CHStream`, own Railway service | Not part of this repo anymore. |
 
+> ### ⚠️ HOSTING / ZSCALER — the live blocker (2026-08-04)
+> The bank's ZScaler proxy breaks the shared hosting domains:
+> - **`vercel.app` → Browser Isolation.** The page renders in a remote browser and streams pixels,
+>   so **clipboard writes never reach the AE's local machine** — i.e. **Copy-5 & claim / Win+V paste
+>   is dead under isolation** (the whole SF/LinkedIn copy workflow), plus session timeouts.
+> - **`railway.app` → now BLOCKED outright** (2026-08-04). We tried moving the frontend onto Railway
+>   to dodge isolation; ZScaler then blocked `railway.app` too. **Reverted: the frontend stays on
+>   Vercel.** No app code changed for that experiment (Next `next start` reads `$PORT` — it was
+>   dashboard-only); if a Railway frontend service was created, delete/ignore it and make sure the
+>   API's `CORS_ORIGINS` points back at the Vercel origin.
+> - **⚠️ The API is on `railway.app` too.** If ZScaler's block is domain-wide, AE browsers may no
+>   longer reach `matchmaker2-production.up.railway.app` at all — which breaks the app regardless of
+>   where the frontend lives. **Verify from an AE machine:** open `…/health` — if it fails, the API
+>   also needs to move off `railway.app`.
+> - **The only durable fix is a CUSTOM COMPANY DOMAIN** for BOTH the frontend and the API (e.g.
+>   `matchmaker.<bank>.com` + `matchmaker-api.<bank>.com`), which IT can allowlist / exclude from
+>   isolation. Every shared host (vercel.app, railway.app, netlify.app, pages.dev…) is exposed to the
+>   same reclassification, so hopping between them is not a fix. This is now REQUIRED, not optional —
+>   it's an IT/DNS request (CNAME → Vercel/Railway + a ZScaler bypass rule), then update
+>   `NEXT_PUBLIC_API_URL` (rebuild — it's baked at build time) and the API's `CORS_ORIGINS`.
+
 **Local dev:** the historical two-venv split is **no longer required** — removing Streamlit
 (2026-07-17) removed the Starlette 1.x/0.41 conflict that forced it. One venv with the root
 `requirements.txt` + `api/requirements.txt` installed runs everything. The `.venv-api` /
@@ -60,6 +81,7 @@ between them cover every entry point).
 | `api/security.py` | JWT auth (reuses `users` table + bcrypt, legacy-plaintext upgrade on login) |
 | `api/services.py` | Streamlit-free pass/approve/classify transactions (mirror the old page logic) |
 | `api/routers/` | `auth, leads (swipe), pipeline (classify), me, leaderboard, admin, analytics, new_incorps (live SSE stream)` |
+| `api/sheet_sink.py` | **One-way push of new incorps into the Google Sheet** (§13) — batching, two latency tiers, fail-safe. Paired with `google_sheet/` (the Apps Script + setup) |
 | `api/analytics.py` | pandas computations for the analytics board |
 | `frontend/src/lib/` | `api.ts` (fetch + token), `auth.tsx` (context), `types.ts`, `format.ts` |
 | `frontend/src/components/` | `SwipeCard` (portrait card + candidate dropdowns + pass overlay), `LeadProfile` (hero + stats grid + copy-name icon), `ClassifyCard` (SalesNav link, email vetting, CRM status), `AppShell`, `ui.tsx` (Button/Card/CopyButton/…) |
@@ -371,7 +393,10 @@ Still open / deliberately not done:
    `sic_data.py`, `models.py`, `api/*`, `LeadProfile.tsx`, analytics page, `tests/test_sic_data.py`).
    Commit+push deploys frontend (Vercel) + API (Railway) automatically — and the API deploy is what
    loads `sic_lookup` (§3).
-2. **New Incorps page — now a LIVE STREAM** (rebuilt 2026-07-27, §13). A real-time, ephemeral SSE
+2. **New Incorps — PIVOTED BACK TO A GOOGLE SHEET 2026-08-04** (§13). The Sheet is now the
+   AE-facing surface (ZScaler, §1); high-value prospects get their own tab. The API feeds it
+   one-way; everything below still exists and still runs alongside it.
+   **New Incorps page — a LIVE STREAM** (rebuilt 2026-07-27, §13). A real-time, ephemeral SSE
    feed of every new UK incorporation, newest-on-top, rolling window of 25, nothing stored. This is
    a DIFFERENT thing from the old score-ranked DB page (`new_incorps_page.py` in git history, if you
    ever want the tiered/scored view back). Currently unfiltered ("show everyone") — filters are the
@@ -422,6 +447,9 @@ python backfill_approval_labels.py    # one-time: recover the 271 pre-2026-07-18
 python train_model.py                 # retrain; commit the new lead_model.pkl to ship it to the worker
 python backfill_model_scores.py       # one-time: shadow-score existing leads so the admin panel
                                       # lights up now (needs sklearn — run in .venv-ml)
+python sheet_backfill.py 30           # replay 30 days of archived high-value incorps into the
+                                      # Google Sheet (§13). Safe to re-run — the script de-dupes
+node google_sheet/test_code_gs.js     # test the Apps Script without a live spreadsheet
 # ML:
 python train_model.py                 # train + evaluate vs rules, saves lead_model.pkl
 python experiment_sic.py              # SIC feature experiment
@@ -429,12 +457,54 @@ python experiment_sic.py              # SIC feature experiment
 
 ## 13. New-incorps live stream (added 2026-07-27)
 
+> ### 🔀 PIVOTED BACK TO A GOOGLE SHEET (2026-08-04) — read this first
+> The AE-facing surface for new incorps is **a Google Sheet again**, because of the ZScaler
+> blocker in §1 (AE browsers can't be trusted to reach `railway.app` / an isolated `vercel.app`,
+> and Win+V clipboard claiming is dead under Browser Isolation — Sheets is reachable and
+> copy/paste works). **High-value prospects go into the Sheet too**, on their own tab, with a
+> "Why high value" column naming the rule that fired.
+>
+> **New flow:** `CHStream --POST--> API /new-incorps/ingest --batched POST--> Apps Script web app --> Google Sheet`.
+>
+> - **Nothing was removed.** The SSE stream, the React pages, claims, the pipeline and the
+>   `high_value_incorps` archive all still work — the Sheet is an ADDITIONAL destination fed off
+>   the same ingest. If ZScaler is ever fixed, the in-app view is still there; if the Sheet is the
+>   long-term answer, deleting the React pages is a separate, easy cleanup.
+> - **CHStream needed no changes** — it still POSTs to the API. All the new code is in the API.
+> - **One-way by construction** (the explicit requirement): the API only makes outbound POSTs, the
+>   Apps Script has **no `doGet`**, and the backend holds no Google credentials. Nothing an AE
+>   types in the Sheet can reach Matchmaker. (It's a **webhook**, not a WebSocket — Sheets can't
+>   accept a WebSocket, and a WebSocket would be two-way anyway, which is the thing to avoid.)
+> - **`api/sheet_sink.py`** — a bounded in-memory buffer + a background flusher task (started/
+>   stopped in `api/main.py`'s lifespan). Two latency tiers: **high-value rows flush in ~3s** (the
+>   first-to-contact race), everything else batches for **60s** (a log — and Apps Script's daily
+>   runtime quota is the real constraint, so ~2,000 rows/day must not become 2,000 calls).
+>   `enqueue()` is synchronous, non-blocking and swallows every error: **a broken Sheet can never
+>   break ingest.** A failed batch is dropped, not retried forever — stale leads are worthless and
+>   the DB archive is the durable copy.
+> - **`is_high_value` is now `high_value_reasons()`** (a list of the rules that fired, e.g.
+>   `["Capital £50,000", "Zone 1 (EC1V)"]`); `is_high_value` is `bool(reasons)`, so the two can't
+>   disagree. The reasons ride to the Sheet AND onto the SSE event as `high_value_reasons`.
+> - **`google_sheet/`** — `Code.gs` (paste into the Sheet's Apps Script editor), `README.md` (the
+>   click-by-click setup — **the user-side steps live there, not here**), and `test_code_gs.js`, a
+>   Node harness that fakes the Sheets API so `Code.gs` is testable (`node google_sheet/test_code_gs.js`).
+> - The script maps rows **by header name**, so columns can be reordered/deleted in the Sheet, and
+>   it only writes headers Matchmaker sent — the AE columns (`Claimed by`/`Status`/`Notes`) are
+>   never touched. Rows insert at the TOP. Dedupes on `Company number` against the newest 2,000
+>   rows (leniently: `01234567` matches a Sheets-coerced `1234567`).
+> - **Env on the API service:** `SHEET_WEBHOOK_URL` (empty = whole feed off), `SHEET_WEBHOOK_KEY`
+>   (must match `SHARED_KEY` in `Code.gs`), `SHEET_SEND_ALL` (`0` = high-value only),
+>   `SHEET_TAB_ALL` / `SHEET_TAB_HIGH_VALUE`. Health check: `GET /new-incorps/sheet-status`
+>   (JWT) → queued/sent/dropped/last_error. Backfill the Sheet from the archive:
+>   `python sheet_backfill.py 30`.
+
 A real-time feed of every new UK incorporation. The stream itself is **ephemeral** (in-memory ring
 buffer, nothing stored) — with two exceptions that ARE persisted: **claims** (`new_incorp_claims`)
 and **high-value incorps** (`high_value_incorps`, for the archive). Regular unclaimed incorps are
 never stored.
 
-**Flow:** `CHStream (separate Railway service) --POST per company--> API /new-incorps/ingest --in-memory fan-out--> API /new-incorps/stream (SSE) --> React /new-incorps page (rolling 25, newest on top)`.
+**Flow:** `CHStream (separate Railway service) --POST per company--> API /new-incorps/ingest --in-memory fan-out--> API /new-incorps/stream (SSE) --> React /new-incorps page (rolling 25, newest on top)`
+(+ the Google Sheet fan-out above, off the same ingest).
 
 - **`api/routers/new_incorps.py`** — an in-process `_Broker` with **two channels** (`all`,
   `high_value`), each a per-client `asyncio.Queue` set + a `deque(maxlen=25)` buffer, plus a

@@ -34,6 +34,7 @@ from database import engine
 from models import new_incorp_claims, high_value_incorps
 from ..config import settings
 from ..security import get_current_user, CurrentUser
+from ..sheet_sink import sink as sheet_sink
 
 router = APIRouter(prefix="/new-incorps", tags=["new-incorps"])
 
@@ -65,14 +66,40 @@ def is_zone1(postcode) -> bool:
     return any(p.match(ow) for p in _ZONE1_PATTERNS)
 
 
+def _capital(event: dict):
+    """Starting capital as a number, or None when absent/unparseable."""
+    cap = event.get("starting_capital")
+    if cap is None or cap == "":
+        return None
+    try:
+        return float(cap)
+    except (TypeError, ValueError):
+        return None
+
+
+def high_value_reasons(event: dict) -> list[str]:
+    """WHICH of the criteria this lead met, human-readable and in priority order.
+
+    The reasons ride along to the Google Sheet so an AE can see at a glance why a
+    row is on the High Value tab — "Corporate owner (ACME HOLDINGS LTD)" is a
+    different conversation from "Zone 1 (EC1V)". `is_high_value` is just "did any
+    of these fire", so the two can never disagree.
+    """
+    reasons = []
+    cap = _capital(event)
+    if cap is not None and cap > CAPITAL_THRESHOLD:
+        reasons.append(f"Capital £{int(cap):,}")
+    if event.get("corporate_owner"):
+        owner = (event.get("owner_name") or "").strip()
+        reasons.append(f"Corporate owner ({owner})" if owner else "Corporate owner")
+    if is_zone1(event.get("postcode")):
+        reasons.append(f"Zone 1 ({_outward_code(str(event.get('postcode') or ''))})")
+    return reasons
+
+
 def is_high_value(event: dict) -> bool:
     """Any one of: capital > £25k, corporate owner, or a Zone-1 postcode."""
-    cap = event.get("starting_capital")
-    try:
-        cap_ok = cap is not None and cap != "" and float(cap) > CAPITAL_THRESHOLD
-    except (TypeError, ValueError):
-        cap_ok = False
-    return bool(cap_ok or event.get("corporate_owner") or is_zone1(event.get("postcode")))
+    return bool(high_value_reasons(event))
 
 
 class _Broker:
@@ -222,11 +249,15 @@ async def ingest(body: IncorpIn, x_ingest_key: str = Header(default="")):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bad ingest key.")
     event = body.model_dump()
     event["received_at"] = datetime.now(timezone.utc).isoformat()
-    event["high_value"] = is_high_value(event)
+    reasons = high_value_reasons(event)
+    event["high_value"] = bool(reasons)
+    event["high_value_reasons"] = reasons
     listeners = broker.publish_incorp(event)          # fast, in-memory — do first
     if event["high_value"]:
         _persist_high_value(event)                    # then archive (doesn't delay the stream)
-    return {"ok": True, "listeners": listeners, "high_value": event["high_value"]}
+    sheet_sink.enqueue(event, reasons)                # one-way push to the Google Sheet
+    return {"ok": True, "listeners": listeners, "high_value": event["high_value"],
+            "sheet": sheet_sink.enabled}
 
 
 @router.post("/claim", status_code=status.HTTP_200_OK)
@@ -264,6 +295,14 @@ async def claim(body: ClaimIn, user: CurrentUser = Depends(get_current_user)):
     owner = owner or user.username
     broker.register_claim(body.company_number, owner)
     return {"ok": True, "claimed_by": owner, "already": owner != user.username}
+
+
+@router.get("/sheet-status")
+def sheet_status(user: CurrentUser = Depends(get_current_user)) -> dict:
+    """Is the Google Sheet feed alive? Counters + the last error, so a
+    misconfigured webhook is visible in the app instead of only in Railway logs.
+    Read-only and one-way: this reports what we SENT, it never asks the sheet."""
+    return sheet_sink.status()
 
 
 @router.get("/archive")
