@@ -308,7 +308,8 @@ def sheet_status(user: CurrentUser = Depends(get_current_user)) -> dict:
     """Is the Google Sheet feed alive? Counters + the last error, so a
     misconfigured webhook is visible in the app instead of only in Railway logs.
     Read-only and one-way: this reports what we SENT, it never asks the sheet."""
-    return sheet_sink.status()
+    from ..sheet_pipeline import pipeline_sync
+    return {**sheet_sink.status(), "pipeline": pipeline_sync.status()}
 
 
 @router.get("/archive")

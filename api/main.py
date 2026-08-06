@@ -35,9 +35,12 @@ async def lifespan(app: FastAPI):
     load_claims_into_broker()
     # The one-way Google Sheet feed (no-op unless SHEET_WEBHOOK_URL is set).
     from .sheet_sink import sink as sheet_sink
+    from .sheet_pipeline import pipeline_sync
     sheet_sink.start()
+    pipeline_sync.start()        # the "My Pipeline" tab (needs SHEET_PIPELINE_USERS)
     yield
     await sheet_sink.stop()      # flush the buffer before the process goes away
+    await pipeline_sync.stop()
 
 
 app = FastAPI(title="Matchmaker 2.0 API", version="0.1.0", lifespan=lifespan)

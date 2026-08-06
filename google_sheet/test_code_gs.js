@@ -49,8 +49,10 @@ function makeSheet(name) {
         return { setFontWeight: () => ({ setBackground: () => {} }) };
       },
       setNumberFormat: () => {},
+      setDataValidation: (rule) => { sheet.validation[col - 1] = rule; },
     }),
   };
+  sheet.validation = {};
   return sheet;
 }
 
@@ -62,6 +64,15 @@ global.SpreadsheetApp = {
   }),
 };
 global.LockService = { getScriptLock: () => ({ waitLock: () => {}, releaseLock: () => {} }) };
+global.SpreadsheetApp.newDataValidation = () => {
+  const rule = { list: null, allowInvalid: null };
+  const api = {
+    requireValueInList: (list) => { rule.list = list; return api; },
+    setAllowInvalid: (v) => { rule.allowInvalid = v; return api; },
+    build: () => rule,
+  };
+  return api;
+};
 global.ContentService = {
   MimeType: { JSON: 'json' },
   createTextOutput: (s) => ({ getContent: () => s, setMimeType: () => ({ getContent: () => s }) }),
@@ -162,6 +173,60 @@ check('new column values written',
 check('existing AE data survived the column insert',
       all.grid[2][head.indexOf('Claimed by')] === 'josh-2');
 check('AE columns still last', head.slice(-3).join('|') === 'Claimed by|Status|Notes');
+
+// ---------------------------------------------------------------------------
+// SYNC MODE — the "My Pipeline" tab: a mutable list, not a stream
+// ---------------------------------------------------------------------------
+const PIPE_COLS = ['Row key', 'In pipeline', 'Company', 'Fit score', 'Email 1'];
+const PIPE_AE = ['Outcome', 'Notes'];
+const syncPost = (rows) => post({
+  key: 'test-key', mode: 'sync', columns: PIPE_COLS, aeColumns: PIPE_AE,
+  keyColumn: 'Row key', presence: { column: 'In pipeline', absent: 'Left' },
+  validation: { Outcome: ['Net New', 'Disqualified'] },
+  sheets: { 'My Pipeline': rows },
+});
+const pipeRow = (key, company, extra = {}) => Object.assign(
+  { 'Row key': key, 'In pipeline': 'Yes', Company: company }, extra);
+
+// Rows arrive OLDEST-FIRST (the Apps Script's one ordering convention), so the
+// last one sent is the one that should end up at the top of the tab.
+syncPost([pipeRow('a|jane smith', 'ALPHA LTD', { 'Fit score': 61, 'Email 1': 'j@a.com' }),
+          pipeRow('b|bob jones', 'BETA LTD', { 'Fit score': 47 })]);
+const pipe = sheets['My Pipeline'];
+const ph = () => pipe.grid[0];
+const keyAt = ph().indexOf('Row key');
+const rowFor = (key) => pipe.grid.find((r, i) => i > 0 && r[keyAt] === key);
+check('pipeline tab created with AE columns last',
+      ph().slice(-2).join('|') === 'Outcome|Notes');
+check('dropdown applied to the Outcome column',
+      (pipe.validation[ph().indexOf('Outcome')] || {}).list.join(',') === 'Net New,Disqualified');
+check('both pipeline rows written', pipe.grid.length === 3);
+check('newest lead (sent last) is on top', pipe.grid[1][keyAt] === 'b|bob jones');
+
+// The AE fills in their own columns on both rows...
+const outcomeAt = ph().indexOf('Outcome');
+const pipeNotesAt = ph().indexOf('Notes');
+rowFor('a|jane smith')[outcomeAt] = 'Net New';
+rowFor('b|bob jones')[pipeNotesAt] = 'left a voicemail';
+
+// ...and a re-sync updates OUR columns in place without touching theirs.
+syncPost([pipeRow('a|jane smith', 'ALPHA LTD', { 'Fit score': 88, 'Email 1': 'j@a.com' }),
+          pipeRow('b|bob jones', 'BETA LTD', { 'Fit score': 47 }),
+          pipeRow('c|sam patel', 'GAMMA LTD', { 'Fit score': 55 })]);
+const fitAt = ph().indexOf('Fit score');
+check('no duplicate row for an existing key', pipe.grid.length === 4);
+check('changed Matchmaker value refreshed in place', rowFor('a|jane smith')[fitAt] === 88);
+check('AE Outcome survived the re-sync', rowFor('a|jane smith')[outcomeAt] === 'Net New');
+check('AE Notes survived the re-sync', rowFor("b|bob jones")[pipeNotesAt] === 'left a voicemail');
+check('new pipeline row added on top', pipe.grid[1][keyAt] === 'c|sam patel');
+
+// A lead that leaves the pipeline is MARKED, not deleted — its notes stay.
+syncPost([pipeRow('b|bob jones', 'BETA LTD', { 'Fit score': 47 })]);
+const inPipeAt = ph().indexOf('In pipeline');
+check('departed row marked Left', rowFor('a|jane smith')[inPipeAt] === 'Left');
+check('departed row NOT deleted', pipe.grid.length === 4);
+check('departed row keeps the AE outcome', rowFor('a|jane smith')[outcomeAt] === 'Net New');
+check('still-present row stays Yes', rowFor('b|bob jones')[inPipeAt] === 'Yes');
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll Apps Script checks passed.');
 process.exit(failures ? 1 : 0);

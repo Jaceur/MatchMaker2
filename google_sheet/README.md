@@ -131,6 +131,46 @@ returns `queued / sent / dropped / last_sent_at / last_error`.
   deployments → ✏️ → Version: New version → Deploy**, or the live URL keeps
   running the old code. The URL itself stays the same.
 
+## The "My Pipeline" tab
+
+A mirror of your classify pipeline in the app — every approved lead still waiting
+for a CRM status — so you can work it from the sheet.
+
+**To switch it on**, add one variable to the Railway API service:
+
+| Variable | Value |
+|---|---|
+| `SHEET_PIPELINE_USERS` | `josh` (comma-separate to give other AEs a tab each) |
+| `SHEET_PIPELINE_SYNC_MINUTES` | `5` (optional) |
+
+The tab and its dropdown build themselves on the first sync.
+
+**One row per director**, because the five email guesses are per person — a lead
+with three directors gets three rows, with the company details repeated so each
+row sorts and filters on its own. Each row carries the Companies House link, the
+bare domain for a Salesforce Business Search (the cell copies as `acme.co.uk` and
+clicks through to the site), the LinkedIn/SalesNav search, the "why now" opener,
+the director's officer page, and **five email guesses — each one clicks straight
+through to Mailmeteor** to verify it, exactly like the app's ✓/✗ flow.
+
+**Outcome and Notes are yours.** Outcome is a dropdown of the same CRM statuses
+the app offers. A sync updates only Matchmaker's columns, one at a time, so
+anything you type is never read, rewritten, or disturbed.
+
+> ⚠️ **The dropdown does not classify the lead.** This tab is one-way like
+> everything else here: choosing "Net New" in the sheet records it *for you*, and
+> Matchmaker never sees it. The lead stays in your pipeline (in the app and on
+> this tab) until you classify it in the app.
+
+**When a lead leaves your pipeline** — you classified it, or it was reassigned —
+its row isn't deleted. **In pipeline** flips to `Left` and the row stays put,
+with your Outcome and Notes intact. Filter on `In pipeline = Yes` for today's
+work; the rest is your history.
+
+Rows are keyed on **Row key** (company number + director). That's what makes a
+re-sync an update rather than a duplicate — don't edit or delete that column.
+Hide it if it's in the way.
+
 ## For whoever changes this next
 
 - `Code.gs` has a test harness that fakes the Sheets API, so you can change it

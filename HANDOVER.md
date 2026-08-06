@@ -524,6 +524,32 @@ python experiment_sic.py              # SIC feature experiment
 >   runtime quota (90 min personal / 6 h Workspace) at ~1-2s a call means 2,000 individual pushes
 >   could exhaust it; high-value is a fraction of that volume. `DEDUPE_ROWS` in `Code.gs` cut
 >   2000 → 750 for the same reason — per-call cost is now paid far more often.
+> **"My Pipeline" tab (2026-08-05, `api/sheet_pipeline.py`):** the classify pipeline (`/pipeline`
+> unclassified leads) mirrored into a sheet tab for the AEs named in `SHEET_PIPELINE_USERS`
+> (empty = off), re-synced every `SHEET_PIPELINE_SYNC_MINUTES` (5).
+> - **ONE ROW PER DIRECTOR**, not per lead — the five email guesses are per person. Lead columns
+>   repeat down its rows so each row sorts/filters independently. Carries the CH link, the bare
+>   domain for Salesforce Business Search, the SalesNav search, "why now", the officer page, and
+>   the 5 email guesses as `=HYPERLINK(mailmeteor, address)` — the cell READS and COPIES as the
+>   plain address but clicks through to verify, which is why it's a formula and the company name
+>   deliberately isn't one.
+> - **A pipeline is a MUTABLE LIST, not a stream**, so the Apps Script gained **`mode: "sync"`**:
+>   upsert by `Row key` (`crn|director`), refreshing only Matchmaker's columns **one whole column
+>   at a time** so AE columns are never even read (a formula they wrote survives). Departed leads
+>   are **marked `In pipeline: Left`, never deleted** — deleting would take their Outcome/Notes.
+> - **Ordering convention (bit me once):** the script's rule is "rows arrive OLDEST-first, the
+>   last one lands on top". The feed is naturally chronological; `_PIPELINE_SQL` therefore orders
+>   `updated_at ASC` even though the page shows newest-first. Sending DESC puts the oldest lead
+>   on top.
+> - **The Outcome dropdown is one-way too** — `validation` in the payload sets the CRM statuses,
+>   but **choosing one does NOT classify the lead**; that still happens in the app. `CRM_STATUS_OPTIONS`
+>   is duplicated from `ClassifyCard.tsx` (no server-side list exists) — change both.
+> - `_full_url` exists because some stored `website_url`s have no scheme and HYPERLINK treats a
+>   schemeless string as a RELATIVE link (dead cell). Found in real data, not in tests.
+> - Health: `GET /new-incorps/sheet-status` now returns a `pipeline` block too.
+> - **`api/sheet_sink.post_payload`** is the shared outbound door (auth, retries, what counts as
+>   success) — the feed and the sync both go through it.
+>
 > - **`Code.gs` auto-adds missing columns** (`addMissingColumns`), to the left of the AE-owned
 >   ones, so a new Matchmaker field lands on EXISTING tabs instead of being dropped. Trade-off:
 >   a column you delete comes back next send — **hide unwanted columns, don't delete them.**

@@ -142,6 +142,46 @@ def should_flush(pending: int, oldest_age: float, has_high_value: bool) -> bool:
     return oldest_age >= (HV_FLUSH_SECONDS if has_high_value else ALL_FLUSH_SECONDS)
 
 
+def post_payload(payload: dict, label: str = "payload") -> tuple[bool, str | None]:
+    """POST one prepared payload to the Apps Script web app, with backoff.
+
+    The single outbound door — the live feed and the pipeline sync both go
+    through it, so auth, retries and "what counts as success" are defined once.
+    BLOCKING (uses `requests`): call it via `asyncio.to_thread`, never inline on
+    the event loop.
+    """
+    if not settings.sheet_webhook_key:
+        # A published Apps Script URL is public; never post to one unauthenticated.
+        return False, "SHEET_WEBHOOK_KEY not set - refusing to post to a public web app."
+    body_out = json.dumps({**payload, "key": settings.sheet_webhook_key}, default=str)
+    last = None
+    for attempt in range(SEND_RETRIES):
+        try:
+            # Apps Script /exec answers with a 302 to script.googleusercontent —
+            # requests follows it by default, which is what we want.
+            resp = requests.post(
+                settings.sheet_webhook_url,
+                data=body_out,
+                headers={"Content-Type": "application/json"},
+                timeout=SEND_TIMEOUT,
+            )
+            if resp.ok:
+                body = (resp.text or "")[:200]
+                # Apps Script returns 200 even for an application-level error (a
+                # bad key, an exception in the script), so read the body.
+                if '"ok":true' in body.replace(" ", ""):
+                    return True, None
+                last = f"Apps Script rejected it: {body!r}"
+                break                # a rejection won't fix itself on retry
+            last = f"HTTP {resp.status_code}: {(resp.text or '')[:200]!r}"
+        except requests.RequestException as e:
+            last = str(e)
+        if attempt < SEND_RETRIES - 1:
+            time.sleep(2 ** attempt)
+    print(f"[sheet] {label} failed: {last}", flush=True)
+    return False, last
+
+
 class SheetSink:
     """Buffers rows and POSTs them to the Apps Script web app in batches."""
 
@@ -247,39 +287,9 @@ class SheetSink:
             self.stats["last_error"] = error
 
     def _post(self, batch: dict[str, list[dict]]) -> tuple[bool, str | None]:
-        """POST one batch, with backoff. Runs in a worker thread."""
-        if not settings.sheet_webhook_key:
-            # Unreachable now that `enabled` requires the key (kept as a guard:
-            # a published Apps Script URL is public, so never post unauthenticated).
-            return False, "SHEET_WEBHOOK_KEY not set - refusing to post to a public web app."
-        payload = {"key": settings.sheet_webhook_key,
-                   "columns": SHEET_COLUMNS, "sheets": batch}
-        last = None
-        for attempt in range(SEND_RETRIES):
-            try:
-                # Apps Script /exec answers with a 302 to script.googleusercontent
-                # — requests follows it by default, which is what we want.
-                resp = requests.post(
-                    settings.sheet_webhook_url,
-                    data=json.dumps(payload, default=str),
-                    headers={"Content-Type": "application/json"},
-                    timeout=SEND_TIMEOUT,
-                )
-                if resp.ok:
-                    body = (resp.text or "")[:200]
-                    # Apps Script returns 200 even for an application-level error
-                    # (a bad key, an exception in the script), so read the body.
-                    if '"ok":true' in body.replace(" ", ""):
-                        return True, None
-                    last = f"Apps Script rejected the batch: {body!r}"
-                    break            # a rejection won't fix itself on retry
-                last = f"HTTP {resp.status_code}: {(resp.text or '')[:200]!r}"
-            except requests.RequestException as e:
-                last = str(e)
-            if attempt < SEND_RETRIES - 1:
-                time.sleep(2 ** attempt)
-        print(f"[sheet] batch of {sum(len(r) for r in batch.values())} failed: {last}", flush=True)
-        return False, last
+        """POST one batch of new rows. Runs in a worker thread."""
+        return post_payload({"columns": SHEET_COLUMNS, "sheets": batch},
+                            label=f"batch of {sum(len(r) for r in batch.values())}")
 
     async def _run(self) -> None:
         """Sleep until the oldest pending row is due — or until `enqueue` wakes

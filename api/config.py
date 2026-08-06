@@ -72,6 +72,17 @@ class Settings(BaseSettings):
     sheet_flush_seconds: int = 15
     sheet_flush_seconds_high_value: int = 0
 
+    # ---- "My Pipeline" tab (also one-way) ----
+    # Comma-separated usernames whose classify pipeline is mirrored into the
+    # sheet. EMPTY = off. One name gets the plain tab; several get one tab each,
+    # suffixed with the username.
+    sheet_pipeline_users: str = ""
+    sheet_tab_pipeline: str = "My Pipeline"
+    # A pipeline changes only when leads are approved or classified, so this
+    # doesn't need to be fast — and each sync rewrites every row, so it costs
+    # more Apps Script runtime than a feed row does. Floor of 1 minute.
+    sheet_pipeline_sync_minutes: int = 5
+
     @field_validator("jwt_secret")
     @classmethod
     def _resolve_jwt_secret(cls, value: str) -> str:
