@@ -600,9 +600,15 @@ python experiment_sic.py              # SIC feature experiment
 >   gotchas: values are **double-encoded** (encoded inside the DSL, then again in the URL, hence
 >   `%2520` for a space), and `(`/`)` must stay literal — a plain double `encodeURIComponent`
 >   does both. `recentSearchParam`/`sessionId` are dropped (personal to whoever captured them).
->   **`LINKEDIN_REGIONS` maps CH residency → LinkedIn geo id and can only be filled in by
->   capturing real searches** — a guessed id doesn't error, it silently returns nothing. Only
->   Scotland (`100752109`) is in there; "United Kingdom" and "England" are the two worth adding.
+>   **`REGIONS` maps CH residency → LinkedIn geo id.** ~25 countries are mapped (plus aliases for
+>   Companies House's free-text spellings: UK/Great Britain/GB, USA, Türkiye…), covering the live
+>   residency distribution. **Only `scotland` is VERIFIED** against a captured URL; the rest come
+>   from the public geo taxonomy and are marked unverified — **a wrong id doesn't error, it
+>   silently returns an empty search**, which reads as "not on LinkedIn". `salesNavRegionCheck()`
+>   emits one URL per mapped region so they can be eyeballed in a couple of minutes; an unmapped
+>   residency deliberately falls back to a name-only search rather than guessing.
+>   Tested by `frontend/src/lib/salesnav.test.ts` — run with plain `node` (it strips the types
+>   itself, no runner to install); it asserts the captured URL still reproduces byte-for-byte.
 >   *Why this matters strategically:* SalesNav has the Salesforce integration, so it's the
 >   sanctioned route to a CRM record without retyping.
 > - **Copy 5 → Copy 4**: the hardcoded "Director" title was dropped (every one of these people is

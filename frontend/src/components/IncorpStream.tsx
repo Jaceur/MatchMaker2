@@ -9,7 +9,7 @@ import { formatMoney, companiesHouseUrl } from "@/lib/format";
 import {
   copyToClipboardHistory, lastNameOrUnknown, salesforceFields,
 } from "@/lib/clipboard";
-import { hasRegion, salesNavPeopleUrl } from "@/lib/salesnav";
+import { hasRegion, regionLabel, salesNavPeopleUrl } from "@/lib/salesnav";
 
 const MAX_ON_SCREEN = 25;
 type Status = "connecting" | "live" | "reconnecting";
@@ -127,6 +127,17 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
   // LinkedIn for someone called Unknown finds nothing.
   const personName = (c: Incorp) =>
     [c.director_first_name, c.director_last_name].filter(Boolean).join(" ").trim();
+
+  // Opening SalesNav also puts the COMPANY on the clipboard, because the next
+  // thing you do there is narrow by employer — this saves retyping it. A single
+  // write, so it's a plain Ctrl+V, not a Win+V history entry.
+  function openSalesNav(c: Incorp) {
+    navigator.clipboard.writeText(c.company_name || "").catch(() => {
+      /* clipboard blocked (isolation) — the link still opens, and the claim
+         still registers; only the convenience copy is lost. */
+    });
+    claimLead(c);
+  }
 
   async function runCopy(c: Incorp, ordered: string[]) {
     setCopying(keyOf(c));
@@ -250,11 +261,12 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
                               href={salesNavPeopleUrl(personName(c), c.director_residence)}
                               target="_blank"
                               rel="noreferrer"
-                              onClick={() => claimLead(c)}
+                              onClick={() => openSalesNav(c)}
                               title={
-                                hasRegion(c.director_residence)
-                                  ? `Opens Sales Navigator, filtered to ${c.director_residence}, and claims this lead`
-                                  : "Opens a Sales Navigator search for this person and claims this lead"
+                                (hasRegion(c.director_residence)
+                                  ? `Opens Sales Navigator filtered to ${regionLabel(c.director_residence)}`
+                                  : "Opens a Sales Navigator search for this person") +
+                                ", copies the company name, and claims this lead"
                               }
                               className="whitespace-nowrap rounded-md border border-border px-2.5 py-1 text-center text-xs font-medium transition hover:border-brand hover:text-brand"
                             >
