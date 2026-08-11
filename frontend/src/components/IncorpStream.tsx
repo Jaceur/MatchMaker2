@@ -6,6 +6,10 @@ import { API_BASE_URL, getToken, api } from "@/lib/api";
 import type { Incorp } from "@/lib/types";
 import { Card } from "@/components/ui";
 import { formatMoney, companiesHouseUrl } from "@/lib/format";
+import {
+  copyToClipboardHistory, lastNameOrUnknown, salesforceFields,
+} from "@/lib/clipboard";
+import { hasRegion, salesNavPeopleUrl } from "@/lib/salesnav";
 
 const MAX_ON_SCREEN = 25;
 type Status = "connecting" | "live" | "reconnecting";
@@ -25,11 +29,20 @@ function sicList(v: Incorp["sic_codes"]): string[] {
   return String(v).split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+// The name as it will be COPIED, so the tile never shows something different
+// from what lands in Salesforce. A corporate-owned company with no named person
+// reads "Unknown" in both places.
+function displayName(c: Incorp): string {
+  return [c.director_first_name || "", lastNameOrUnknown(c.director_last_name)]
+    .filter(Boolean).join(" ").trim();
+}
+
 // CHStream enrichment + why-it's-high-value, when present.
 function enrichmentBits(c: Incorp): string[] {
-  const bits: string[] = [];
-  const name = [c.director_first_name, c.director_last_name].filter(Boolean).join(" ").trim();
-  if (name) bits.push(`👤 ${name}`);
+  const bits: string[] = [`👤 ${displayName(c)}`];
+  // Where the principal shareholder (the PSC, falling back to the first
+  // director) lives — an overseas residency changes how you approach them.
+  if (c.director_residence) bits.push(`🌍 ${c.director_residence}`);
   const cap = Number(c.starting_capital);
   if (Number.isFinite(cap) && cap > 0) bits.push(`💷 ${formatMoney(cap)}`);
   if (c.corporate_owner) bits.push(`🏢 owned by ${c.owner_name || "a company"}`);
@@ -39,26 +52,13 @@ function enrichmentBits(c: Incorp): string[] {
   return bits;
 }
 
-// Ofcom reserved fictional mobile (+447700900xxx) — valid format, never a real line.
-const fakeMobile = () =>
-  `+447700900${String(Math.floor(Math.random() * 1000)).padStart(3, "0")}`;
-
-// Write values to the clipboard in sequence so each becomes its own Win+V entry
-// (a gap is required or Windows merges them). Oldest-first; Win+V is newest-first.
-async function copyToClipboardHistory(values: string[]): Promise<void> {
-  for (const v of values) {
-    await navigator.clipboard.writeText(v);
-    await new Promise((r) => setTimeout(r, 250));
-  }
-}
-
 const keyOf = (c: Incorp) => `${c.company_number}:${c.received_at}`;
 
 export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
   const [items, setItems] = useState<Incorp[]>([]);
   const [status, setStatus] = useState<Status>("connecting");
   const [now, setNow] = useState(() => Date.now());
-  const [copying, setCopying] = useState<{ key: string; kind: "sf" | "li" } | null>(null);
+  const [copying, setCopying] = useState<string | null>(null);
   // company_number -> claimed_by, applied across the whole list (grey-out).
   const [claims, setClaims] = useState<Record<string, string>>({});
   const seen = useRef<Set<string>>(new Set());
@@ -82,9 +82,19 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
         setClaims((m) => ({ ...m, [c.company_number]: c.claimed_by as string }));
       }
       const k = keyOf(c);
-      if (seen.current.has(k)) return;
+      if (seen.current.has(k)) return;     // exact re-delivery (reconnect replay)
       seen.current.add(k);
-      setItems((prev) => [c, ...prev].slice(0, MAX_ON_SCREEN));
+      setItems((prev) => {
+        // Two-phase ingest: the bare company arrives first, the enriched version
+        // seconds later. MERGE the second onto the first, in place — a new tile
+        // would duplicate it, and re-prepending would make it jump the queue
+        // ahead of companies that genuinely arrived after it.
+        const at = prev.findIndex((p) => p.company_number === c.company_number);
+        if (at === -1) return [c, ...prev].slice(0, MAX_ON_SCREEN);
+        const next = [...prev];
+        next[at] = { ...next[at], ...c };
+        return next;
+      });
     };
     // Server broadcasts a claim whenever ANY AE copies a lead — grey it everywhere.
     es.addEventListener("claim", (e) => {
@@ -106,21 +116,20 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
   // 5 fields for a Salesforce record, one per Win+V entry (First, Last, Title,
   // Company, Phone reading down).
   async function copyForSalesforce(c: Incorp) {
-    const ordered = [
-      fakeMobile(), c.company_name || "", "Director",
-      c.director_last_name || "", c.director_first_name || "",
-    ];
-    await runCopy(c, "sf", ordered);
+    // Shared with the High-Value Archive's copy button — one definition of the
+    // field order and of the "Unknown" last-name rule, so they can't drift.
+    const ordered = salesforceFields(
+      c.director_first_name || "", c.director_last_name || "", c.company_name || "");
+    await runCopy(c, ordered);
   }
 
-  // 2 entries for LinkedIn: the full name (top of Win+V), then company below it.
-  async function copyForLinkedIn(c: Incorp) {
-    const name = [c.director_first_name, c.director_last_name].filter(Boolean).join(" ").trim();
-    await runCopy(c, "li", [c.company_name || "", name]); // company written first → name on top
-  }
+  // The real person's name — no "Unknown" fallback here, since searching
+  // LinkedIn for someone called Unknown finds nothing.
+  const personName = (c: Incorp) =>
+    [c.director_first_name, c.director_last_name].filter(Boolean).join(" ").trim();
 
-  async function runCopy(c: Incorp, kind: "sf" | "li", ordered: string[]) {
-    setCopying({ key: keyOf(c), kind });
+  async function runCopy(c: Incorp, ordered: string[]) {
+    setCopying(keyOf(c));
     try {
       await copyToClipboardHistory(ordered);
       claimLead(c);
@@ -132,6 +141,16 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
   }
 
   const dot = status === "live" ? "bg-success" : status === "reconnecting" ? "bg-warning" : "bg-muted";
+  // How far behind real time the feed is: the age of the newest company on
+  // screen. "Live" only says the SSE socket is open — it stays green through a
+  // stalled ingest, which is exactly when you want to know. Reuses the ticking
+  // `now`, so it counts up on its own between events.
+  //
+  // A climbing number is NOT necessarily a fault: Companies House registers
+  // almost nothing overnight or at weekends (32 arrivals on a Saturday against
+  // ~600 on a weekday), so minutes of quiet are normal then. Hence a plain
+  // readout rather than a red warning that would cry wolf every Sunday.
+  const newestAt = items[0]?.received_at;
   const heading = channel === "high_value" ? "💎 High-value incorporations — live" : "✨ New incorporations — live";
   const blurb = channel === "high_value"
     ? "Capital > £10k, corporate-owned, or a London Zone-1 postcode. Newest on top, 25 max."
@@ -147,6 +166,14 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
         <div className="flex items-center gap-2 text-sm">
           <span className={`inline-block h-2.5 w-2.5 rounded-full ${dot} ${status === "live" ? "animate-pulse" : ""}`} />
           <span className="capitalize text-muted">{status}</span>
+          {newestAt && (
+            <span
+              className="tabular-nums text-muted"
+              title="Age of the newest company on screen — how far behind real time this feed is. Quiet overnight and at weekends."
+            >
+              · last {ago(newestAt, now)}
+            </span>
+          )}
         </div>
       </header>
 
@@ -158,9 +185,12 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
         <ul className="space-y-2">
           <AnimatePresence initial={false}>
             {items.map((c) => {
-              const k = keyOf(c);
+              // Keyed on the COMPANY, not on keyOf (which includes received_at):
+              // phase 2 replaces phase 1 in place, and a changing React key would
+              // remount the tile and replay its entry animation mid-update.
+              const k = c.company_number;
               const claimedBy = claims[c.company_number];
-              const busy = copying?.key === k;
+              const busy = copying === keyOf(c);
               return (
                 <motion.li
                   key={k}
@@ -208,20 +238,29 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
                             type="button"
                             onClick={() => copyForSalesforce(c)}
                             disabled={busy}
-                            title="Copies 5 fields to clipboard history (Win+V) and claims this lead so no one else works it"
+                            title="Copies 4 fields to clipboard history (Win+V) and claims this lead so no one else works it"
                             className="whitespace-nowrap rounded-md border border-border px-2.5 py-1 text-xs font-medium transition hover:border-brand hover:text-brand disabled:opacity-60"
                           >
-                            {busy && copying?.kind === "sf" ? "Copying…" : "📋 Copy 5 & claim"}
+                            {busy ? "Copying…" : "📋 Copy 4 & claim"}
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => copyForLinkedIn(c)}
-                            disabled={busy}
-                            title="Copies the full name + company to clipboard history (Win+V) and claims this lead"
-                            className="whitespace-nowrap rounded-md border border-border px-2.5 py-1 text-xs font-medium transition hover:border-brand hover:text-brand disabled:opacity-60"
-                          >
-                            {busy && copying?.kind === "li" ? "Copying…" : "🔗 Copy LI & claim"}
-                          </button>
+                          {/* A real link, not a button: middle-click and ctrl-click
+                              behave as expected, and claiming rides on the click. */}
+                          {personName(c) && (
+                            <a
+                              href={salesNavPeopleUrl(personName(c), c.director_residence)}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={() => claimLead(c)}
+                              title={
+                                hasRegion(c.director_residence)
+                                  ? `Opens Sales Navigator, filtered to ${c.director_residence}, and claims this lead`
+                                  : "Opens a Sales Navigator search for this person and claims this lead"
+                              }
+                              className="whitespace-nowrap rounded-md border border-border px-2.5 py-1 text-center text-xs font-medium transition hover:border-brand hover:text-brand"
+                            >
+                              🔗 SalesNav{hasRegion(c.director_residence) ? " 🌍" : ""} & claim
+                            </a>
+                          )}
                         </div>
                       )}
                     </div>

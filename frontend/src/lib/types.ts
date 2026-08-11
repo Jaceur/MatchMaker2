@@ -98,7 +98,13 @@ export interface Incorp {
   owner_name?: string | null;
   director_first_name?: string | null;
   director_last_name?: string | null;
+  // Country of residence of the PSC (or the first director when there's no
+  // individual PSC) — i.e. the principal shareholder's residency.
+  director_residence?: string | null;
+  director_dob?: string | null;
   director_other_companies?: number | string | null;
+  // Seconds from Companies House publishing the company to our ingest.
+  stream_lag_seconds?: number | null;
   high_value?: boolean | null;
   // Set once an AE copies/claims it — greyed out for everyone (server-broadcast).
   claimed?: boolean | null;

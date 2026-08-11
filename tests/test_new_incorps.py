@@ -12,9 +12,12 @@ os.environ.setdefault("SUPABASE_USER", "test")
 
 import pytest  # noqa: E402
 
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
 from api.config import settings  # noqa: E402
 from api.routers.new_incorps import (  # noqa: E402
     MAX_ON_SCREEN, _Broker, _sse, capital_threshold, is_high_value, is_zone1,
+    stream_lag_seconds,
 )
 
 
@@ -70,6 +73,46 @@ def test_capital_empty_or_garbage_is_safe():
 
 
 # ==========================================
+# STREAM LAG (CH publish -> our ingest)
+# ==========================================
+NOW = datetime(2026, 8, 11, 9, 0, 0, tzinfo=timezone.utc)
+
+
+def test_lag_is_measured_from_the_ch_publish_time():
+    ev = {"ch_published_at": (NOW - timedelta(seconds=4.5)).isoformat()}
+    assert stream_lag_seconds(ev, NOW) == 4.5
+
+
+def test_z_suffix_is_parsed():
+    """CH sends '...Z', which fromisoformat rejected before 3.11 and which we
+    normalise rather than depend on the runtime for."""
+    assert stream_lag_seconds({"ch_published_at": "2026-08-11T08:59:50Z"}, NOW) == 10.0
+
+
+def test_a_naive_timestamp_is_assumed_utc():
+    """No offset must not mean "local time" — that would silently add hours."""
+    assert stream_lag_seconds({"ch_published_at": "2026-08-11T08:59:00"}, NOW) == 60.0
+
+
+def test_missing_publish_time_is_none_not_zero():
+    """An older CHStream doesn't send it. Reporting 0 would flatter the numbers
+    by pretending those companies arrived instantly."""
+    assert stream_lag_seconds({}, NOW) is None
+    assert stream_lag_seconds({"ch_published_at": None}, NOW) is None
+    assert stream_lag_seconds({"ch_published_at": ""}, NOW) is None
+
+
+def test_garbage_never_raises():
+    """Ingest must not 500 because a timestamp was malformed."""
+    assert stream_lag_seconds({"ch_published_at": "not-a-date"}, NOW) is None
+
+
+def test_clock_skew_cannot_produce_a_negative_lag():
+    future = (NOW + timedelta(seconds=30)).isoformat()
+    assert stream_lag_seconds({"ch_published_at": future}, NOW) == 0.0
+
+
+# ==========================================
 # BROKER — channels
 # ==========================================
 def test_high_value_leads_go_to_both_channels_others_only_to_all():
@@ -91,6 +134,34 @@ def test_subscriber_only_hears_its_channel():
         b.publish_incorp({"company_number": "hv", "starting_capital": 99999})
         kind, ev = await q_hv.get()
         assert kind == "incorp" and ev["company_number"] == "hv"
+    asyncio.run(scenario())
+
+
+def test_phase_two_replaces_phase_one_in_place():
+    """Two-phase ingest: the same company arrives bare then enriched. It must
+    stay ONE tile, keep its position (so it doesn't jump under the AE's cursor),
+    and end up with the enriched details."""
+    async def scenario():
+        b = _Broker()
+        b.publish_incorp({"company_number": "A", "postcode": "EC1V 0AA"})   # phase 1
+        b.publish_incorp({"company_number": "B"})                            # a later company
+        b.publish_incorp({"company_number": "A", "postcode": "EC1V 0AA",
+                          "director_last_name": "Smith"})                    # phase 2 of A
+        snap = b.snapshot("all")
+        assert [e["company_number"] for e in snap] == ["A", "B"]   # no duplicate, order held
+        assert snap[0]["director_last_name"] == "Smith"            # enriched won
+    asyncio.run(scenario())
+
+
+def test_a_phase_two_that_gains_high_value_reaches_the_hv_channel():
+    """Zone-1 is knowable at phase 1, but corporate ownership only appears after
+    enrichment — such a lead must still arrive on the high-value channel."""
+    async def scenario():
+        b = _Broker()
+        b.publish_incorp({"company_number": "C", "postcode": "M1 1AE"})      # not HV yet
+        assert b.snapshot("high_value") == []
+        b.publish_incorp({"company_number": "C", "postcode": "M1 1AE", "corporate_owner": True})
+        assert [e["company_number"] for e in b.snapshot("high_value")] == ["C"]
     asyncio.run(scenario())
 
 

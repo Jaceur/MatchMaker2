@@ -17,8 +17,26 @@ export async function copyToClipboardHistory(values: string[]): Promise<void> {
   }
 }
 
-// The 5 Salesforce fields, ordered so Win+V (newest-first) reads down the form:
-// First name, Last name, Title (Director), Company, Phone.
+// Salesforce requires a Last Name, and a company whose only shareholder is
+// another company often has no individual on file at all — Companies House has
+// a corporate PSC and no named person. "Unknown" is what goes in the field then.
+//
+// It also fixes a subtler bug that affected every nameless lead: writing an
+// EMPTY string may not create a Win+V clipboard-history entry at all, which
+// silently shortens the sequence from 5 to 4 and shifts every following paste
+// up a field. A placeholder keeps the positions aligned.
+export const SF_UNKNOWN_LAST_NAME = "Unknown";
+
+export function lastNameOrUnknown(lastName?: string | null): string {
+  return (lastName || "").trim() || SF_UNKNOWN_LAST_NAME;
+}
+
+// The Salesforce fields, ordered so Win+V (newest-first) reads down the form:
+// First name, Last name, Company, Phone.
+//
+// Title used to be a fifth entry, hardcoded to "Director" — dropped 2026-08-11
+// because it carried no information (every one of these people is a director by
+// definition) and cost a paste. Four entries, one fewer keystroke per lead.
 export function salesforceFields(firstName: string, lastName: string, company: string): string[] {
-  return [fakeMobile(), company || "", "Director", lastName || "", firstName || ""];
+  return [fakeMobile(), company || "", lastNameOrUnknown(lastName), firstName || ""];
 }

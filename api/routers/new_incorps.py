@@ -124,12 +124,27 @@ class _Broker:
         by = self._claimed.get(event.get("company_number"))
         return {**event, "claimed": True, "claimed_by": by} if by else event
 
+    @staticmethod
+    def _upsert(buffer: deque, event: dict) -> None:
+        """Replace this company in the window if it's already there, else add it.
+
+        Two-phase ingest means the same company arrives twice (bare, then
+        enriched). Appending both would show it as two tiles; replacing IN PLACE
+        keeps the position it already had, so a lead doesn't jump around the
+        screen under the AE's cursor as its details fill in."""
+        cn = event.get("company_number")
+        for i, existing in enumerate(buffer):
+            if existing.get("company_number") == cn:
+                buffer[i] = event
+                return
+        buffer.append(event)
+
     def publish_incorp(self, event: dict) -> int:
         event = self._annotate(event)
         targets = ["all"] + (["high_value"] if is_high_value(event) else [])
         msg = ("incorp", event)
         for ch in targets:
-            self._buffers[ch].append(event)
+            self._upsert(self._buffers[ch], event)
             for q in list(self._subs[ch]):
                 _offer(q, msg)
         return sum(len(self._subs[ch]) for ch in targets)
@@ -221,6 +236,32 @@ def _as_date(v):
         return None
 
 
+def stream_lag_seconds(event: dict, now: datetime | None = None):
+    """Seconds between Companies House publishing this company to the stream and
+    us ingesting it — the pipeline lag that actually matters in a
+    first-to-contact race, covering CHStream's enrichment calls and both hops.
+
+    Returns None when CHStream didn't send `ch_published_at` (an older build, or
+    an envelope without it) — absent is NOT zero, and a lag of 0 would quietly
+    flatter the numbers.
+
+    NOT the same as "how long after incorporation": `date_of_creation` is a DATE,
+    so CH's own publishing delay can never be measured more finely than a day.
+    """
+    raw = event.get("ch_published_at")
+    if not raw:
+        return None
+    try:
+        published = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
+    delta = ((now or datetime.now(timezone.utc)) - published).total_seconds()
+    # Clamp: a negative lag means clock skew between CH and us, not time travel.
+    return round(max(0.0, delta), 2)
+
+
 def _persist_high_value(event: dict) -> None:
     """Store a high-value incorp in the durable archive (first-seen snapshot;
     re-streams are ignored). Never lets a DB hiccup break ingest."""
@@ -254,16 +295,38 @@ async def ingest(body: IncorpIn, x_ingest_key: str = Header(default="")):
     if x_ingest_key != settings.new_incorp_ingest_key:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bad ingest key.")
     event = body.model_dump()
-    event["received_at"] = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    event["received_at"] = now.isoformat()
+    # Measured once, here, against the same `now` that stamps received_at — so
+    # the lag can never drift from the timestamp it's supposed to explain.
+    event["stream_lag_seconds"] = stream_lag_seconds(event, now)
     reasons = high_value_reasons(event)
     event["high_value"] = bool(reasons)
     event["high_value_reasons"] = reasons
+
+    # TWO-PHASE INGEST (2026-08-11). CHStream sends each company twice: phase 1
+    # the instant the stream event lands (no REST calls, so seconds earlier),
+    # phase 2 once enriched. Phase 1 exists purely to get a tile on screen —
+    # Zone-1 alone identifies ~80% of high-value leads and needs only the
+    # postcode, which rides in the stream event.
+    #
+    # Only phase 2 reaches the ARCHIVE and the SHEET, deliberately:
+    #   - the archive upserts with on_conflict_do_nothing, so a phase-1 row would
+    #     win permanently and the enriched one would be silently discarded;
+    #   - the sheet de-duplicates per company, so phase 1 would claim the row and
+    #     phase 2's director, capital and PSC would never appear.
+    # A company whose phase 2 never arrives is therefore visible live but absent
+    # from both — the right trade, since a half-empty archive row is worse than
+    # none, and CHStream retries the POST.
+    first_phase_only = event.get("phase") == 1
+
     listeners = broker.publish_incorp(event)          # fast, in-memory — do first
-    if event["high_value"]:
-        _persist_high_value(event)                    # then archive (doesn't delay the stream)
-    sheet_sink.enqueue(event, reasons)                # one-way push to the Google Sheet
+    if not first_phase_only:
+        if event["high_value"]:
+            _persist_high_value(event)                # then archive (doesn't delay the stream)
+        sheet_sink.enqueue(event, reasons)            # one-way push to the Google Sheet
     return {"ok": True, "listeners": listeners, "high_value": event["high_value"],
-            "sheet": sheet_sink.enabled}
+            "phase": event.get("phase", 2), "sheet": sheet_sink.enabled}
 
 
 @router.post("/claim", status_code=status.HTTP_200_OK)

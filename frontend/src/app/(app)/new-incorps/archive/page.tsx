@@ -140,7 +140,7 @@ export default function HighValueArchivePage() {
                             onClick={() => copyAndClaim(r)}
                             className="whitespace-nowrap rounded-md border border-border px-2 py-1 text-xs font-medium transition hover:border-brand hover:text-brand disabled:opacity-60"
                           >
-                            {working ? "…" : "📋 Copy 5 & claim"}
+                            {working ? "…" : "📋 Copy 4 & claim"}
                           </button>
                           <button
                             type="button"

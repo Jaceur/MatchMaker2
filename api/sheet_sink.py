@@ -56,7 +56,7 @@ SHEET_COLUMNS = [
     "Corporate owner", "Owner name",
     "First name", "Last name", "Director DOB", "Director residence",
     "Other directorships", "High value", "Why high value",
-    "Companies House", "LinkedIn",
+    "Companies House", "LinkedIn", "Stream lag (s)",
 ]
 
 _CH_URL = "https://find-and-update.company-information.service.gov.uk/company/"
@@ -125,6 +125,11 @@ def row_for(event: dict, reasons: list[str] | None = None) -> dict:
         "Why high value": "; ".join(reasons),
         "Companies House": (_CH_URL + crn) if crn else "",
         "LinkedIn": _linkedin_search(first, last),
+        # Seconds from Companies House publishing it to us ingesting it. Blank
+        # (not 0) when CHStream didn't send the publish time — see
+        # new_incorps.stream_lag_seconds.
+        "Stream lag (s)": event.get("stream_lag_seconds")
+                          if event.get("stream_lag_seconds") is not None else "",
     }
 
 

@@ -550,6 +550,64 @@ python experiment_sic.py              # SIC feature experiment
 > - **`api/sheet_sink.post_payload`** is the shared outbound door (auth, retries, what counts as
 >   success) — the feed and the sync both go through it.
 >
+> **Changes 2026-08-11:**
+> - **Stream-lag instrumentation.** CHStream now forwards `ch_published_at` + `ch_timepoint` from
+>   the CH stream ENVELOPE (it previously read the timepoint and discarded the rest);
+>   `new_incorps.stream_lag_seconds` turns that into `stream_lag_seconds` on every event, stored in
+>   the `lead` JSONB and shown as a **"Stream lag (s)"** sheet column. **Requires BOTH services
+>   deployed** — the API can't measure what CHStream doesn't send. Absent = `None`, never 0 (0
+>   would flatter the average); negative clamps to 0 (clock skew, not time travel).
+>   ⚠️ **What can NEVER be measured:** `date_of_creation` is a DATE — Companies House publishes no
+>   incorporation TIME — so CH's own publish delay has day resolution at best. Measured at the
+>   time: 98.7% of companies arrive on their incorporation date; the CHStream→API hop alone is
+>   ~1.43s median (that's mostly the `starting_capital` REST call, which happens after
+>   `timePulled` is stamped).
+> - **Stream delay next to "Live"** (`IncorpStream`): the age of the newest tile, counting up
+>   between events. "Live" only means the SSE socket is open — it stays green through a stalled
+>   ingest. Deliberately a plain readout, not a colour warning: CH registers ~32 companies on a
+>   Saturday against ~600 on a weekday, so any fixed threshold would cry wolf every weekend.
+> - **Principal shareholder's residency** on the tiles (`🌍`). No backend change — CHStream already
+>   sent `director_residence` from the PSC (falling back to the first director); nothing displayed
+>   it. Present on 86.8% of leads. Note CH is not normalised: "United Kingdom" and "England" are
+>   both common values for the same thing.
+> - **Last name "Unknown" when there's no named individual.** A corporate-shareholder-only company
+>   often has no person on file — **13.2% of high-value leads (324 of 383 corporate-owned)**. Fixes
+>   a real Copy-5 bug beyond the missing name: an EMPTY clipboard write may not create a Win+V
+>   entry at all, shortening the sequence from 5 to 4 and shifting every later paste up a field.
+>   The rule lives in `lastNameOrUnknown`/`salesforceFields` (`lib/clipboard.ts`), and
+>   `IncorpStream`'s duplicated copy-5 block was deleted in favour of it — one definition now.
+>   **NOT applied to LinkedIn copy** (you'd be searching for a person called Unknown) and NOT to
+>   the sheet's raw `Last name` column (an archive shouldn't assert a name that doesn't exist).
+>
+> **Changes 2026-08-11 (speed push — the competitive brief):**
+> - **Where the time actually goes**, measured rather than guessed: CH-publish→ingest ~1.4s+,
+>   ingest→tile ms, **tile→AE claims 28s median (8 min p90)**, then manual SF entry. We control
+>   ~4% of the clock. **And only 20.8% of high-value leads are ever claimed** (602/2,893 in a
+>   week) — 05:00-07:00 is 305 leads at a 3% claim rate, because CH starts publishing at 05:00 and
+>   AEs start at 08:00. Coverage, not latency, is the bigger loss.
+> - **TWO-PHASE INGEST.** CHStream now posts each company TWICE: phase 1 straight off the stream
+>   event with zero REST calls, phase 2 enriched. Justified by measurement — **79.9% of
+>   high-value leads qualify on the Zone-1 postcode alone** (which rides in the stream event),
+>   23.6% on corporate owner, and **capital on just 1.1%** (33 leads/week — that criterion costs a
+>   filing-history call for almost nothing; consider dropping it).
+>   Phase 1 is **stream-only**: it must NOT reach the archive (whose upsert is
+>   `on_conflict_do_nothing`, so the bare row would win forever) or the Sheet (which de-duplicates
+>   per company, so the enriched details would never land). `_Broker._upsert` replaces a company
+>   in place so it stays one tile and keeps its position; the frontend merges by company_number
+>   and keys tiles on the company (not `keyOf`, which includes received_at and would remount).
+> - **SalesNav deep link** (`lib/salesnav.ts`) replaces the "Copy LI" button. Reproduces
+>   LinkedIn's query DSL exactly — verified byte-identical against a real captured URL. Two
+>   gotchas: values are **double-encoded** (encoded inside the DSL, then again in the URL, hence
+>   `%2520` for a space), and `(`/`)` must stay literal — a plain double `encodeURIComponent`
+>   does both. `recentSearchParam`/`sessionId` are dropped (personal to whoever captured them).
+>   **`LINKEDIN_REGIONS` maps CH residency → LinkedIn geo id and can only be filled in by
+>   capturing real searches** — a guessed id doesn't error, it silently returns nothing. Only
+>   Scotland (`100752109`) is in there; "United Kingdom" and "England" are the two worth adding.
+>   *Why this matters strategically:* SalesNav has the Salesforce integration, so it's the
+>   sanctioned route to a CRM record without retyping.
+> - **Copy 5 → Copy 4**: the hardcoded "Director" title was dropped (every one of these people is
+>   a director; it carried no information and cost a paste).
+>
 > - **`Code.gs` auto-adds missing columns** (`addMissingColumns`), to the left of the AE-owned
 >   ones, so a new Matchmaker field lands on EXISTING tabs instead of being dropped. Trade-off:
 >   a column you delete comes back next send — **hide unwanted columns, don't delete them.**

@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { api, ApiError } from "@/lib/api";
 import type { ClaimedLead } from "@/lib/types";
 import { Card, Spinner } from "@/components/ui";
+import { salesNavPeopleUrl } from "@/lib/salesnav";
 
 // The tickable outreach steps (free-form on the backend, so easy to extend).
 const STEPS: { key: string; label: string }[] = [
@@ -13,8 +14,9 @@ const STEPS: { key: string; label: string }[] = [
   { key: "follow_up", label: "Follow-up" },
 ];
 
-const linkedinSearch = (name: string) =>
-  `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(name)}`;
+// Sales Navigator rather than plain LinkedIn search — same person, but it's the
+// tool with the Salesforce integration, so the lead can be saved to CRM from
+// there instead of being retyped. Narrowed by residency where we know the geo id.
 
 export default function NewIncorpPipelinePage() {
   const [rows, setRows] = useState<ClaimedLead[] | null>(null);
@@ -97,7 +99,12 @@ export default function NewIncorpPipelinePage() {
                         {dir && (
                           <>
                             <span>· 👤 {dir}</span>
-                            <a href={linkedinSearch(dir)} target="_blank" rel="noreferrer" className="text-brand underline">
+                            <a
+                              href={salesNavPeopleUrl(dir, r.lead?.director_residence)}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-brand underline"
+                            >
                               in ↗
                             </a>
                           </>
