@@ -32,8 +32,9 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database import engine
-from models import new_incorp_claims, high_value_incorps
+from models import new_incorp_claims, high_value_incorps, incorp_log
 from ..config import settings
+from ..gp_scoring import score_lead
 from ..security import get_current_user, CurrentUser
 from ..sheet_sink import sink as sheet_sink
 
@@ -42,7 +43,11 @@ router = APIRouter(prefix="/new-incorps", tags=["new-incorps"])
 MAX_ON_SCREEN = 25
 _CLIENT_QUEUE_MAX = 100
 _HEARTBEAT_SECONDS = 15
-CHANNELS = ("all", "high_value")
+# "beta" is the GP-scored channel (api/gp_scoring.py) — a different question
+# from high_value: not "is this substantial" but "will this generate FX, card
+# interchange and balances". Run alongside, not instead of, so the two can be
+# compared on real claim rates before either is retired.
+CHANNELS = ("all", "high_value", "beta")
 
 # ---- High-Value criteria (any one qualifies) ----
 def capital_threshold() -> int:
@@ -142,6 +147,12 @@ class _Broker:
     def publish_incorp(self, event: dict) -> int:
         event = self._annotate(event)
         targets = ["all"] + (["high_value"] if is_high_value(event) else [])
+        # Phase gating falls out of scoring each phase independently: a lead that
+        # already clears the bar on sector + name + postcode alone goes out at
+        # phase 1, seconds early; one that needs the director or capital simply
+        # doesn't qualify yet and gets its chance when phase 2 rescores it.
+        if event.get("gp_score", 0) >= settings.beta_score_threshold:
+            targets.append("beta")
         msg = ("incorp", event)
         for ch in targets:
             self._upsert(self._buffers[ch], event)
@@ -287,6 +298,37 @@ def _persist_high_value(event: dict) -> None:
         print(f"new-incorps: archive persist failed for {event.get('company_number')} ({e})")
 
 
+def _log_incorp(event: dict) -> None:
+    """One minimal row per incorporation — INCLUDING the ones we filter out.
+
+    Without this the unfiltered feed is discarded, so "how many wholesale or
+    e-commerce companies register each day, and what share do we actually
+    surface?" is unanswerable. ~2,000 rows/day. Written at phase 2 only (it's off
+    the critical path there) and never allowed to break ingest."""
+    sic = event.get("sic_codes")
+    sic_str = ", ".join(sic) if isinstance(sic, list) else (sic or None)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                pg_insert(incorp_log).values(
+                    company_number=event["company_number"],
+                    company_name=event.get("company_name"),
+                    date_of_creation=_as_date(event.get("date_of_creation")),
+                    sic_codes=sic_str,
+                    postcode=event.get("postcode"),
+                    city=event.get("city"),
+                    director_residence=event.get("director_residence"),
+                    corporate_owner=bool(event.get("corporate_owner")),
+                    starting_capital=_as_int(event.get("starting_capital")),
+                    high_value=bool(event.get("high_value")),
+                    gp_score=event.get("gp_score"),
+                    received_at=datetime.utcnow(),
+                ).on_conflict_do_nothing(index_elements=["company_number"])
+            )
+    except Exception as e:
+        print(f"new-incorps: incorp_log write failed for {event.get('company_number')} ({e})")
+
+
 @router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)
 async def ingest(body: IncorpIn, x_ingest_key: str = Header(default="")):
     """CHStream calls this per new incorporation (X-Ingest-Key auth)."""
@@ -303,6 +345,9 @@ async def ingest(body: IncorpIn, x_ingest_key: str = Header(default="")):
     reasons = high_value_reasons(event)
     event["high_value"] = bool(reasons)
     event["high_value_reasons"] = reasons
+    # The beta GP score, recomputed each phase — phase 1 sees sector, name and
+    # postcode; phase 2 adds the director, ownership and capital.
+    event["gp_score"], event["gp_reasons"] = score_lead(event)
 
     # TWO-PHASE INGEST (2026-08-11). CHStream sends each company twice: phase 1
     # the instant the stream event lands (no REST calls, so seconds earlier),
@@ -324,9 +369,11 @@ async def ingest(body: IncorpIn, x_ingest_key: str = Header(default="")):
     if not first_phase_only:
         if event["high_value"]:
             _persist_high_value(event)                # then archive (doesn't delay the stream)
+        _log_incorp(event)                            # EVERY company, for population analysis
         sheet_sink.enqueue(event, reasons)            # one-way push to the Google Sheet
     return {"ok": True, "listeners": listeners, "high_value": event["high_value"],
-            "phase": event.get("phase", 2), "sheet": sheet_sink.enabled}
+            "gp_score": event["gp_score"], "phase": event.get("phase", 2),
+            "sheet": sheet_sink.enabled}
 
 
 @router.post("/claim", status_code=status.HTTP_200_OK)

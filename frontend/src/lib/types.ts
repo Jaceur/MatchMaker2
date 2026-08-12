@@ -105,6 +105,9 @@ export interface Incorp {
   director_other_companies?: number | string | null;
   // Seconds from Companies House publishing the company to our ingest.
   stream_lag_seconds?: number | null;
+  // Beta channel: likely-GP score and the components that produced it.
+  gp_score?: number | null;
+  gp_reasons?: string[] | null;
   high_value?: boolean | null;
   // Set once an AE copies/claims it — greyed out for everyone (server-broadcast).
   claimed?: boolean | null;

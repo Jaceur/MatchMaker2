@@ -614,6 +614,33 @@ python experiment_sic.py              # SIC feature experiment
 > - **Copy 5 → Copy 4**: the hardcoded "Director" title was dropped (every one of these people is
 >   a director; it carried no information and cost a paste).
 >
+> **BETA GP-SCORED CHANNEL (2026-08-12, `api/gp_scoring.py`) — the third channel.**
+> The business objective was restated: not "is this company substantial" but **"how much GP will
+> it generate via FX, card interchange and balances"**. Those are different questions and the
+> data says they can point OPPOSITE ways, so `beta` runs ALONGSIDE `high_value`, not instead of
+> it — you cannot compare them if you delete one.
+> - **Evidence behind the weights** (6,055 leads / 14 days): corporate ownership is **50% Tier C**
+>   (property SPVs, dormant, holdcos, residents' management — structurally zero card/FX/balance),
+>   i.e. an ANTI-signal for GP despite reading as "substantial". Median starting capital is **£1**,
+>   p90 £100, so capital is noise for 99% of companies. The FX sectors run **48-69% overseas
+>   directors** (46900 wholesale 69%, 46190 agents 66%, 47910 e-commerce 49%).
+>   Cross-reference: Software/Data is Matchmaker's BEST-converting group (×1.50 SIC multiplier)
+>   and is bottom for corporate ownership at 8%; Restaurants is the worst (×0.50) and near the top.
+> - **Score** = sector band (FX +30 / card +20 / **dead −40**) + overseas director +25 + foreign
+>   parent +15 + corporate +10 + trade word in name +10 + agent postcode +5 + nominee director
+>   (20+ boards) **−15** + capital 0-40 **log-scaled** (£1k→0, £100k→40, capped so a £2m outlier
+>   can't swamp everything). Threshold `BETA_SCORE_THRESHOLD` (40) → ~13% of the current
+>   high-value feed, 56/day. **Capital never goes negative**: £1 of share capital is common in a
+>   well-funded one-investor company, so absence of evidence must not become evidence of absence.
+> - **Phase gating falls out for free**: the score is recomputed each phase, so a lead clearing
+>   the bar on sector + name + postcode alone (all in the stream event) publishes at **phase 1**,
+>   seconds early; one needing the director or capital simply qualifies at phase 2 instead.
+> - **`incorp_log`** — a minimal row for EVERY incorporation (~2,000/day, written at phase 2),
+>   because the unfiltered feed was discarded and "what are we missing?" was therefore
+>   unanswerable. Needed before any filter change can be judged.
+> - ⚠️ **Still no outcome data**: 1 success across 2,194 claims. Until the Success/Remove buttons
+>   are used, beta-vs-high_value cannot be settled and every weight here is a prior, not a finding.
+>
 > - **`Code.gs` auto-adds missing columns** (`addMissingColumns`), to the left of the AE-owned
 >   ones, so a new Matchmaker field lands on EXISTING tabs instead of being dropped. Trade-off:
 >   a column you delete comes back next send — **hide unwanted columns, don't delete them.**

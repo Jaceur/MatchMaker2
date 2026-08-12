@@ -336,6 +336,32 @@ high_value_incorps = Table(
 )
 
 # ==========================================
+# INCORP LOG — every incorporation, high-value or not
+# ==========================================
+# The `all` channel was ephemeral, so we could only ever analyse companies that
+# had ALREADY qualified — which made "what are we missing?" unanswerable. This is
+# a minimal row per incorporation (~2,000/day) written at phase 2, so the whole
+# population is measurable: how many wholesale/e-commerce companies register
+# daily, what share we surface, and how the GP score distributes across all of
+# them rather than across the pre-filtered slice.
+# No JSONB and no director names — this is for counting, not for working leads.
+incorp_log = Table(
+    'incorp_log', metadata,
+    Column('company_number', String(20), primary_key=True),
+    Column('company_name', String(255)),
+    Column('date_of_creation', Date, index=True),
+    Column('sic_codes', String(255)),
+    Column('postcode', String(20)),
+    Column('city', String(255)),
+    Column('director_residence', String(100)),
+    Column('corporate_owner', Boolean),
+    Column('starting_capital', BigInteger),
+    Column('high_value', Boolean, index=True),   # the legacy criteria
+    Column('gp_score', Float, index=True),       # the beta score
+    Column('received_at', DateTime),
+)
+
+# ==========================================
 # SCREENING LOG (ML training data)
 # ==========================================
 # One row per lead the staged pipeline processes: the features the score was

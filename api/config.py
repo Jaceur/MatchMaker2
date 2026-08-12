@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # code change — expect to move it again once you see the volume it lets in.
     high_value_capital_threshold: int = 10_000
 
+    # The BETA channel's bar (api/gp_scoring.py). Scores run roughly -55 to +100;
+    # 40 puts ~13% of the current high-value feed through. Env-tunable
+    # (BETA_SCORE_THRESHOLD) so it can be retuned from the dashboard without a
+    # deploy — expect to move it once there's outcome data to move it against.
+    beta_score_threshold: float = 40.0
+
     # ---- Google Sheet sink (one-way: the API POSTs, it never reads back) ----
     # The Apps Script web-app /exec URL. EMPTY = the whole sink is off (nothing
     # queued, no background task, no calls) — so the sheet is opt-in per

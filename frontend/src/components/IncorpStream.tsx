@@ -54,7 +54,7 @@ function enrichmentBits(c: Incorp): string[] {
 
 const keyOf = (c: Incorp) => `${c.company_number}:${c.received_at}`;
 
-export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
+export function IncorpStream({ channel }: { channel: "all" | "high_value" | "beta" }) {
   const [items, setItems] = useState<Incorp[]>([]);
   const [status, setStatus] = useState<Status>("connecting");
   const [now, setNow] = useState(() => Date.now());
@@ -162,10 +162,16 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
   // ~600 on a weekday), so minutes of quiet are normal then. Hence a plain
   // readout rather than a red warning that would cry wolf every Sunday.
   const newestAt = items[0]?.received_at;
-  const heading = channel === "high_value" ? "💎 High-value incorporations — live" : "✨ New incorporations — live";
-  const blurb = channel === "high_value"
-    ? "Capital > £10k, corporate-owned, or a London Zone-1 postcode. Newest on top, 25 max."
-    : "Every UK company as it's registered. Newest on top; 25 most recent only. Nothing is saved.";
+  const heading = channel === "beta"
+    ? "🧪 Beta — scored by likely GP"
+    : channel === "high_value"
+      ? "💎 High-value incorporations — live"
+      : "✨ New incorporations — live";
+  const blurb = channel === "beta"
+    ? "Ranked on likely FX, card spend and balances — sector, overseas ownership and (lightly) capital. Property SPVs, holding and dormant companies are suppressed."
+    : channel === "high_value"
+      ? "Capital > £10k, corporate-owned, or a London Zone-1 postcode. Newest on top, 25 max."
+      : "Every UK company as it's registered. Newest on top; 25 most recent only. Nothing is saved.";
 
   return (
     <div>
@@ -236,8 +242,24 @@ export function IncorpStream({ channel }: { channel: "all" | "high_value" }) {
                           ))}
                         </p>
                       )}
+                      {/* On the beta channel, show WHY it scored what it did —
+                          the weights are guesses until there's outcome data, so
+                          they need to be arguable from the tile, not the source. */}
+                      {channel === "beta" && c.gp_reasons && c.gp_reasons.length > 0 && (
+                        <p className="mt-1 text-[11px] text-muted">
+                          {c.gp_reasons.join(" · ")}
+                        </p>
+                      )}
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1.5">
+                      {channel === "beta" && typeof c.gp_score === "number" && (
+                        <span
+                          className="rounded-md bg-brand/10 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-brand"
+                          title="Likely GP score — see the reasons under the company"
+                        >
+                          {c.gp_score}
+                        </span>
+                      )}
                       <span className="whitespace-nowrap text-xs text-muted tabular-nums">{ago(c.received_at, now)}</span>
                       {claimedBy ? (
                         <span className="whitespace-nowrap rounded-md bg-surface-2 px-2.5 py-1 text-xs text-muted">
